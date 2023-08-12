@@ -26,8 +26,11 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#if defined(PSP) || defined(PS2) || defined(GEKKO) || defined(VITA) || defined(_XBOX) || defined(_3DS) || defined(WIIU) || defined(SWITCH) || defined(HAVE_LIBNX) || defined(__PS3__) || defined(__PSL1GHT__)
+#if defined(PSP) || defined(PS2) || defined(GEKKO) || defined(VITA) || defined(_XBOX) || defined(_3DS) || defined(WIIU) || defined(SWITCH) || defined(HAVE_LIBNX) || defined(__PS3__) || defined(__PSL1GHT__) || defined(__EMSCRIPTEN__)
 /* No mman available */
+#ifdef __EMSCRIPTEN__
+#include <stdlib.h>
+#endif
 #elif defined(_WIN32) && !defined(_XBOX)
 #include <windows.h>
 #include <errno.h>

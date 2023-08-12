@@ -431,6 +431,7 @@ else ifneq (,$(findstring armv,$(platform)))
 else ifeq ($(platform), emscripten) 
 	TARGET := $(TARGET_NAME)_libretro_$(platform).bc
 	ARCH = unknown
+	CFLAGS += -D__EMSCRIPTEN__
 
 	STATIC_LINKING = 1
 	STATIC_LINKING_LINK = 1
@@ -685,8 +686,13 @@ else
 			CXXFLAGS += -MD
 		endif
 
-		CFLAGS += -O2 -DNDEBUG
-		CXXFLAGS += -O2 -DNDEBUG
+		ifeq ($(platform), emscripten)
+			CFLAGS += -O3 -DNDEBUG
+			CXXFLAGS += -O3 -DNDEBUG
+		else
+			CFLAGS += -O2 -DNDEBUG
+			CXXFLAGS += -O2 -DNDEBUG
+		endif
 	else
 		CFLAGS += -O3 -DNDEBUG
 		CXXFLAGS += -O3 -DNDEBUG
