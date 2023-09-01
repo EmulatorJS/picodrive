@@ -65,6 +65,7 @@ config_mak="config.mak"
 fail()
 {
   echo "$@"
+  if test -n "$DUMP_CONFIG_LOG"; then cat config.log; fi
   exit 1
 }
 
@@ -127,7 +128,7 @@ set_platform()
   pandora)
     sound_drivers="oss alsa"
     have_libavcodec="yes"
-    MFLAGS="-mcpu=cortex-a8 -mfpu=neon -mfloat-abi=hard"
+    MFLAGS="-mcpu=cortex-a8 -mfpu=neon -mfloat-abi=softfp"
     ;;
   gp2x | wiz | caanoo)
     sound_drivers="oss"
@@ -148,7 +149,6 @@ set_platform()
     CFLAGS="$CFLAGS -D__PSP__"
     MFLAGS="-march=allegrex"
     ARCH=mipsel
-    need_zlib="yes"
     ;;
   *)
     fail "unsupported platform: $platform"
