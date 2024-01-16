@@ -1665,6 +1665,12 @@ void *retro_get_memory_data(unsigned type)
          else
             data = PicoMem.ram;
          break;
+      case RETRO_MEMORY_VIDEO_RAM:
+         data = PicoMem.vram;
+         break;
+      case 4:
+         data = PicoMem.cram;
+         break;
       default:
          data = NULL;
          break;
@@ -1704,6 +1710,15 @@ size_t retro_get_memory_size(unsigned type)
             return 0x2000;
          else
             return sizeof(PicoMem.ram);
+
+      case RETRO_MEMORY_VIDEO_RAM:
+            return sizeof(PicoMem.vram);
+         break;
+
+      // Libretro doens't have a constant declared for CRAM
+      case 4:
+            return sizeof(PicoMem.cram);
+         break;
 
       default:
          return 0;
