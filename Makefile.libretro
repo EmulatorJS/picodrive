@@ -1,5 +1,7 @@
 # Makefile for PicoDrive (libretro)
 
+EMULATORJS_THREADS ?= 0
+
 SPACE :=
 SPACE := $(SPACE) $(SPACE)
 BACKSLASH :=
@@ -432,6 +434,11 @@ else ifeq ($(platform), emscripten)
 	TARGET := $(TARGET_NAME)_libretro_$(platform).bc
 	ARCH = unknown
 	CFLAGS += -D__EMSCRIPTEN__
+	ifeq ($(EMULATORJS_THREADS), 1)
+		LDFLAGS += -pthread
+		CFLAGS += -pthread
+		CXXFLAGS += -pthread
+	endif
 
 	STATIC_LINKING = 1
 	STATIC_LINKING_LINK = 1
