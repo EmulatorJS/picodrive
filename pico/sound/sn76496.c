@@ -56,11 +56,11 @@ struct SN76496
 	int Period[4];
 	int Count[4];
 	int Output[4];
-	int pad[1];
+	int Panning;
 };
 
 static struct SN76496 ono_sn; // one and only SN76496
-int *sn76496_regs;
+int *sn76496_regs = ono_sn.Register;
 
 //static
 void SN76496Write(int data)
@@ -135,7 +135,6 @@ void SN76496Update(short *buffer, int length, int stereo)
 	while (length > 0)
 	{
 		int vol[4];
-		unsigned int out;
 		int left;
 
 
@@ -203,18 +202,41 @@ void SN76496Update(short *buffer, int length, int stereo)
 		} while (left > 0 && R->Volume[3]);
 		if (R->Output[3]) vol[3] -= R->Count[3];
 
-		out = vol[0] * R->Volume[0] + vol[1] * R->Volume[1] +
+		length--;
+		if (R->Panning == 0xff || !stereo) {
+			unsigned int out =
+				vol[0] * R->Volume[0] + vol[1] * R->Volume[1] +
 				vol[2] * R->Volume[2] + vol[3] * R->Volume[3];
 
-		if (out > MAX_OUTPUT * STEP) out = MAX_OUTPUT * STEP;
+			if (out > MAX_OUTPUT * STEP) out = MAX_OUTPUT * STEP;
 
-		if ((out /= STEP)) // will be optimized to shift; max 0x4800 = 18432
-			*buffer += out;
-		if(stereo) buffer+=2; // only left for stereo, to be mixed to right later
-		else buffer++;
+			out /= STEP; // will be optimized to shift; max 0x4800 = 18432
+			*buffer++ += out;
+			if (stereo) *buffer++ += out;
+		} else {
+#define P(n) !!(R->Panning & (1<<(n)))
+			unsigned int outl =
+				vol[0] * R->Volume[0] * P(4) + vol[1] * R->Volume[1] * P(5) +
+				vol[2] * R->Volume[2] * P(6) + vol[3] * R->Volume[3] * P(7);
+			unsigned int outr =
+				vol[0] * R->Volume[0] * P(0) + vol[1] * R->Volume[1] * P(1) +
+				vol[2] * R->Volume[2] * P(2) + vol[3] * R->Volume[3] * P(3);
+#undef P
+			if (outl > MAX_OUTPUT * STEP) outl = MAX_OUTPUT * STEP;
+			if (outr > MAX_OUTPUT * STEP) outr = MAX_OUTPUT * STEP;
 
-		length--;
+			outl /= STEP; // will be optimized to shift; max 0x4800 = 18432
+			outr /= STEP; // will be optimized to shift; max 0x4800 = 18432
+			*buffer++ += outl;
+			*buffer++ += outr;
+		}
 	}
+}
+
+void SN76496Config(int panning)
+{
+	struct SN76496 *R = &ono_sn;
+	R->Panning = panning & 0xff;
 }
 
 
@@ -264,7 +286,6 @@ int SN76496_init(int clock,int sample_rate)
 	int i;
 
 	//R->Channel = stream_create(0,1, sample_rate,R,SN76496Update);
-	sn76496_regs = R->Register;
 
 	R->SampleRate = sample_rate;
 	SN76496_set_clock(R,clock);
@@ -288,6 +309,7 @@ int SN76496_init(int clock,int sample_rate)
 
 	// added
 	SN76496_set_gain(R, 0);
+	R->Panning = 0xff;
 
 	return 0;
 }

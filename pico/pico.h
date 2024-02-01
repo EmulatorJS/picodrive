@@ -116,6 +116,7 @@ typedef struct PicoInterface
 	unsigned short autoRgnOrder;   // packed priority list of regions, for example 0x148 means this detection order: EUR, USA, JAP
 	unsigned int hwSelect;         // hardware preselected via option menu
 	unsigned int mapper;           // mapper selection for SMS, 0 = auto
+	unsigned int tmsPalette;       // palette used by SMS in TMS graphic modes
 
 	unsigned short quirks;         // game-specific quirks: PQUIRK_*
 	unsigned short overclockM68k;  // overclock the emulated 68k, in %
@@ -149,17 +150,14 @@ void PicoGetInternal(pint_t which, pint_ret_t *ret);
 struct PicoEState;
 
 // pico.c
-#define XPCM_BUFFER_SIZE (320+160)
+#define XPCM_BUFFER_SIZE 64
 typedef struct
 {
 	int pen_pos[2];
 	int page;
-	// internal
 	int fifo_bytes;      // bytes in FIFO
-	int fifo_bytes_prev;
-	int fifo_line_bytes; // float part, << 16
-	int line_counter;
 	unsigned short r1, r12;
+	unsigned int reserved[3];
 	unsigned char xpcm_buffer[XPCM_BUFFER_SIZE+4];
 	unsigned char *xpcm_ptr;
 } picohw_state;
@@ -269,7 +267,7 @@ void Pico32xSetClocks(int msh2_hz, int ssh2_hz);
 #define PICO_SSH2_HZ ((int)(7670442.0 * 2.4))
 
 // sound.c
-extern void (*PsndMix_32_to_16l)(s16 *dest, s32 *src, int count);
+extern void (*PsndMix_32_to_16)(s16 *dest, s32 *src, int count);
 void PsndRerate(int preserve_state);
 
 // media.c

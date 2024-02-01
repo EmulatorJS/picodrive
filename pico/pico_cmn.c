@@ -105,8 +105,8 @@ static void do_hint(struct PicoVideo *pv)
   pv->pending_ints |= 0x10;
   if (pv->reg[0] & 0x10) {
     elprintf(EL_INTS, "hint: @ %06x [%u]", SekPc, SekCyclesDone());
-    if (SekIrqLevel < 4)
-      SekInterrupt(4);
+    if (SekIrqLevel < pv->hint_irq)
+      SekInterrupt(pv->hint_irq);
   }
 }
 
@@ -334,7 +334,7 @@ static int PicoFrameHints(void)
   // get samples from sound chips
   PsndGetSamples(y);
 
-  timers_cycle(Pico.t.z80c_aim);
+  timers_cycle(cycles_68k_to_z80(Pico.t.m68c_aim - Pico.t.m68c_frame_start));
 
   pv->hint_cnt = hint;
 

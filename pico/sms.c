@@ -221,6 +221,7 @@ static void z80_sms_out(unsigned short a, unsigned char d)
       {
         case 0xf0:
           // FM reg port
+          Pico.m.hardware |= PMS_HW_FMUSED;
           YM2413_regWrite(d);
           break;
         case 0xf1:
@@ -240,6 +241,8 @@ static void z80_sms_out(unsigned short a, unsigned char d)
       case 0x00:
         if ((PicoIn.AHW & PAHW_GG) && a < 0x8)   // GG I/O area
           Pico.ms.io_gg[a] = d;
+        if ((PicoIn.AHW & PAHW_GG) && a == 0x6)
+          SN76496Config(d);
         break;
       case 0x01:
         if ((PicoIn.AHW & PAHW_GG) && a < 0x8) { // GG I/O area

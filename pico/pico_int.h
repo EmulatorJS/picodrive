@@ -312,7 +312,7 @@ struct PicoVideo
   unsigned char debug_p;      // ... parsed: PVD_*
   unsigned char addr_u;       // bit16 of .addr
   unsigned char hint_cnt;
-  unsigned char pad2;
+  unsigned char hint_irq;     // irq# of HINT (4 on MD, 5 on Pico)
   unsigned short hv_latch;    // latched hvcounter value
   signed int fifo_cnt;        // pending xfers for blocking FIFO queue entries
   signed int fifo_bgcnt;      // pending xfers for background FIFO queue entries
@@ -346,6 +346,8 @@ struct PicoMisc
 #define PMS_HW_LCD	0x2   // GG LCD
 #define PMS_HW_JAP	0x4   // japanese system
 #define PMS_HW_FM	0x8   // FM sound
+#define PMS_HW_TMS	0x10  // assume TMS9918
+#define PMS_HW_FMUSED	0x80  // FM sound accessed
 
 #define PMS_MAP_AUTO	0
 #define PMS_MAP_SEGA	1
@@ -473,6 +475,7 @@ struct PicoSound
   unsigned int fm_pos;                  // last FM position in Q20
   unsigned int psg_pos;                 // last PSG position in Q16
   unsigned int ym2413_pos;              // last YM2413 position
+  unsigned int pcm_pos;                 // last PCM position in Q16
   unsigned int fm_fir_mul, fm_fir_div;  // ratio for FM resampling FIR
 };
 
@@ -703,6 +706,7 @@ int CM_compareRun(int cyc, int is_sub);
 void PicoDrawInit(void);
 PICO_INTERNAL void PicoFrameStart(void);
 void PicoDrawRefreshSprites(void);
+void PicoDrawBgcDMA(u16 *base, u32 source, u32 mask, int len, int sl);
 void PicoDrawSync(int to, int blank_last_line, int limit_sprites);
 void BackFill(int reg7, int sh, struct PicoEState *est);
 void FinalizeLine555(int sh, int line, struct PicoEState *est);
@@ -838,11 +842,19 @@ unsigned int pcd_pcm_read(unsigned int a);
 // pico/pico.c
 PICO_INTERNAL void PicoInitPico(void);
 PICO_INTERNAL void PicoReratePico(void);
+PICO_INTERNAL int PicoPicoIrqAck(int level);
 
 // pico/xpcm.c
 PICO_INTERNAL void PicoPicoPCMUpdate(short *buffer, int length, int stereo);
-PICO_INTERNAL void PicoPicoPCMReset(void);
-PICO_INTERNAL void PicoPicoPCMRerate(int xpcm_rate);
+PICO_INTERNAL void PicoPicoPCMResetN(int pin);
+PICO_INTERNAL void PicoPicoPCMStartN(int pin);
+PICO_INTERNAL int PicoPicoPCMBusyN(void);
+PICO_INTERNAL void PicoPicoPCMGain(int gain);
+PICO_INTERNAL void PicoPicoPCMFilter(int index);
+PICO_INTERNAL void PicoPicoPCMIrqEn(int enable);
+PICO_INTERNAL void PicoPicoPCMRerate(void);
+PICO_INTERNAL int PicoPicoPCMSave(void *buffer, int length);
+PICO_INTERNAL void PicoPicoPCMLoad(void *buffer, int length);
 
 // sek.c
 PICO_INTERNAL void SekInit(void);
@@ -972,6 +984,7 @@ PICO_INTERNAL void PsndDoDAC(int cycle_to);
 PICO_INTERNAL void PsndDoPSG(int cyc_to);
 PICO_INTERNAL void PsndDoYM2413(int cyc_to);
 PICO_INTERNAL void PsndDoFM(int cyc_to);
+PICO_INTERNAL void PsndDoPCM(int cyc_to);
 PICO_INTERNAL void PsndClear(void);
 PICO_INTERNAL void PsndGetSamples(int y);
 PICO_INTERNAL void PsndGetSamplesMS(int y);

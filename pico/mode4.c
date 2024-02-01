@@ -728,17 +728,22 @@ static void FinalizeLine8bitSMS(int line);
 
 void PicoFrameStartSMS(void)
 {
+  struct PicoEState *est = &Pico.est;
   int lines = 192, columns = 256, loffs, coffs;
 
   skip_next_line = 0;
   loffs = screen_offset = 24; // 192 lines is really 224 with top/bottom bars
-  Pico.est.rendstatus = PDRAW_32_COLS;
+  est->rendstatus = PDRAW_32_COLS;
 
   // if mode changes make palette dirty since some modes switch to a fixed one
   if (mode != ((Pico.video.reg[0]&0x06) | (Pico.video.reg[1]&0x18))) {
     mode = (Pico.video.reg[0]&0x06) | (Pico.video.reg[1]&0x18);
     Pico.m.dirtyPal = 1;
   }
+
+  Pico.m.hardware &= ~PMS_HW_TMS;
+  if (PicoIn.tmsPalette || (PicoIn.AHW & (PAHW_SG|PAHW_SC)))
+    Pico.m.hardware |= PMS_HW_TMS;
 
   // Copy LCD enable flag for easier handling
   Pico.m.hardware &= ~PMS_HW_LCD;
@@ -753,14 +758,14 @@ void PicoFrameStartSMS(void)
   } else {
     if ((mode & 4) && (Pico.video.reg[0] & 0x20)) {
       // SMS mode 4 with 1st column blanked
-      Pico.est.rendstatus |= PDRAW_SMS_BLANK_1;
+      est->rendstatus |= PDRAW_SMS_BLANK_1;
       columns = 248;
     }
 
     switch (mode) {
     // SMS2 only 224/240 line modes, e.g. Micro Machines
     case 0x06|0x08:
-        Pico.est.rendstatus |= PDRAW_30_ROWS;
+        est->rendstatus |= PDRAW_30_ROWS;
         loffs = screen_offset = 0;
         lines = 240;
         break;
@@ -776,32 +781,34 @@ void PicoFrameStartSMS(void)
   coffs = (FinalizeLineSMS == NULL && columns == 248 ? 8 : 0);
   if (FinalizeLineSMS != NULL && (PicoIn.opt & POPT_EN_SOFTSCALE)) {
     // softscaling always generates 320px, but no scaling in 8bit fast
-    Pico.est.rendstatus |= PDRAW_SOFTSCALE;
+    est->rendstatus |= PDRAW_SOFTSCALE;
     coffs = 0;
     columns = 320;
   } else if (!(PicoIn.opt & POPT_DIS_32C_BORDER)) {
-    Pico.est.rendstatus |= PDRAW_BORDER_32;
+    est->rendstatus |= PDRAW_BORDER_32;
     line_offset -= coffs;
     coffs = (320-columns) / 2;
     if (FinalizeLineSMS == NULL)
       line_offset += coffs; // ... else centering done in FinalizeLine
   }
 
-  if (Pico.est.rendstatus != rendstatus_old || lines != rendlines) {
+  if (est->rendstatus != rendstatus_old || lines != rendlines) {
+    // mode_change() might reset rendstatus_old by calling SetOutFormat
+    int rendstatus = est->rendstatus;
     emu_video_mode_change(loffs, lines, coffs, columns);
-    rendstatus_old = Pico.est.rendstatus;
+    rendstatus_old = rendstatus;
     rendlines = lines;
     sprites = 0;
   }
 
-  Pico.est.HighCol = HighColBase + screen_offset * HighColIncrement;
-  Pico.est.DrawLineDest = (char *)DrawLineDestBase + screen_offset * DrawLineDestIncrement;
+  est->HighCol = HighColBase + screen_offset * HighColIncrement;
+  est->DrawLineDest = (char *)DrawLineDestBase + screen_offset * DrawLineDestIncrement;
 
   if (FinalizeLineSMS == FinalizeLine8bitSMS) {
-    Pico.m.dirtyPal = (Pico.m.dirtyPal || Pico.est.SonicPalCount ? 2 : 0);
-    memcpy(Pico.est.SonicPal, PicoMem.cram, 0x40*2);
+    Pico.m.dirtyPal = (Pico.m.dirtyPal || est->SonicPalCount ? 2 : 0);
+    memcpy(est->SonicPal, PicoMem.cram, 0x40*2);
   }
-  Pico.est.SonicPalCount = 0;
+  est->SonicPalCount = 0;
 }
 
 void PicoParseSATSMS(int line)
@@ -883,7 +890,7 @@ void PicoDoHighPal555SMS(void)
    * hence GG/SMS/TMS can all be handled the same here */
   for (j = cnt; j > 0; j--) {
     if (!(Pico.video.reg[0] & 0x4)) // fixed palette in TMS modes
-      spal = (u32 *)tmspal + (PicoIn.AHW & (PAHW_SG|PAHW_SC) ? 16/2:0);
+      spal = (u32 *)tmspal + (Pico.m.hardware & PMS_HW_TMS ? 16/2:0);
     for (i = 0x20/2; i > 0; i--, spal++, dpal++) { 
       t = *spal;
 #if defined(USE_BGR555)

@@ -34,6 +34,7 @@ extern int g_screen_ppitch; // pitch in pixels
 #define EOPT_NO_FRMLIMIT  (1<<18)
 #define EOPT_WIZ_TEAR_FIX (1<<19)
 #define EOPT_EXT_FRMLIMIT (1<<20) // no internal frame limiter (limited by snd, etc)
+#define EOPT_PICO_PEN     (1<<21)
 
 enum {
 	EOPT_SCALE_NONE = 0,
@@ -41,12 +42,12 @@ enum {
 	EOPT_SCALE_SW = 1,
 	EOPT_SCALE_HW,
 	// PSP horiz:
-	EOPT_SCALE_43 = 1,	// DAR 4:3 (12:9)
-	EOPT_SCALE_WIDE,	// DAR 14:9
-	EOPT_SCALE_FULL,	// DAR 16:9
+	EOPT_SCALE_43 = 1,	// 4:3 screen
+	EOPT_SCALE_STRETCH,	// stretched to between _43 and _WIDE
+	EOPT_SCALE_WIDE,	// stretched to match display width
 	// PSP vert:
-	EOPT_VSCALE_43 = 1,	// DAR 4:3
-	EOPT_VSCALE_FULL,	// zoomed to full height
+	EOPT_VSCALE_FULL = 1,	// TV height scaled to screen height
+	EOPT_VSCALE_NOBORDER,	// VDP area scaled to screen height
 };
 
 enum {
@@ -106,7 +107,7 @@ extern unsigned char *movie_data;
 extern int reset_timing;
 extern int flip_after_sync;
 
-#define PICO_PEN_ADJUST_X 4
+#define PICO_PEN_ADJUST_X 2
 #define PICO_PEN_ADJUST_Y 2
 extern int pico_pen_x, pico_pen_y;
 extern int pico_inp_mode;
@@ -180,6 +181,7 @@ void pemu_finalize_frame(const char *fps, const char *notice_msg);
 
 void pemu_sound_start(void);
 
+int plat_parse_arg(int argc, char *argv[], int *x);
 void plat_early_init(void);
 void plat_init(void);
 void plat_finish(void);

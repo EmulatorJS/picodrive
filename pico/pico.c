@@ -185,11 +185,13 @@ int PicoReset(void)
 
   PicoDetectRegion();
   Pico.video.status = 0x3428 | Pico.m.pal; // 'always set' bits | vblank | collision | pal
+  Pico.video.hint_irq = (PicoIn.AHW & PAHW_PICO ? 5 : 4);
 
   PsndReset(); // pal must be known here
 
   // create an empty "dma" to cause 68k exec start at random frame location
   Pico.t.m68c_line_start = Pico.t.m68c_aim;
+  PicoDrawBgcDMA(NULL, 0, 0, 0, 0);
   PicoVideoFIFOWrite(rand() & 0x1fff, 0, 0, PVS_CPURD);
 
   SekFinishIdleDet();

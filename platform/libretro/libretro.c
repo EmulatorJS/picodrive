@@ -1830,6 +1830,15 @@ static void update_variables(bool first_run)
    }
 
    var.value = NULL;
+   var.key = "picodrive_smstms";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+      if (strcmp(var.value, "SG-1000") == 0)
+         PicoIn.tmsPalette = 1;
+      else
+         PicoIn.tmsPalette = 0;
+   }
+
+   var.value = NULL;
    var.key = "picodrive_smsmapper";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
       if (strcmp(var.value, "Auto") == 0)
@@ -2101,12 +2110,12 @@ void run_events_pico(unsigned int events)
     PicoIn.pad[0] &= ~0x0f; // release UDLR
 
     lim_x = (Pico.video.reg[12]&1) ? 319 : 255;
-    if (pico_pen_y < 8)
-	pico_pen_y = 8;
+    if (pico_pen_y < PICO_PEN_ADJUST_Y)
+	pico_pen_y = PICO_PEN_ADJUST_Y;
     if (pico_pen_y > 224 - PICO_PEN_ADJUST_Y)
 	pico_pen_y = 224 - PICO_PEN_ADJUST_Y;
-    if (pico_pen_x < 0)
-	pico_pen_x = 0;
+    if (pico_pen_x < PICO_PEN_ADJUST_X)
+	pico_pen_x = PICO_PEN_ADJUST_X;
     if (pico_pen_x > lim_x - PICO_PEN_ADJUST_X)
 	pico_pen_x = lim_x - PICO_PEN_ADJUST_X;
 

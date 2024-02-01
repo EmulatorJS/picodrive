@@ -366,6 +366,7 @@ me_bind_action emuctrl_actions[] =
 	{ "Pico Next page   ", PEV_PICO_PNEXT },
 	{ "Pico Prev page   ", PEV_PICO_PPREV },
 	{ "Pico Switch input", PEV_PICO_SWINP },
+	{ "Pico Display pen ", PEV_PICO_PEN },
 	{ NULL,                0 }
 };
 
@@ -473,6 +474,7 @@ static menu_entry e_menu_md_options[] =
 	mee_onoff_h   ("FM audio",        MA_OPT2_ENABLE_YM2612, PicoIn.opt, POPT_EN_FM, h_fmsound),
 	mee_onoff_h   ("FM filter",       MA_OPT_FM_FILTER, PicoIn.opt, POPT_EN_FM_FILTER, h_fmfilter),
 	mee_onoff_h   ("FM DAC noise",    MA_OPT2_ENABLE_YM_DAC, PicoIn.opt, POPT_EN_FM_DAC, h_dacnoise),
+	mee_onoff     ("Show Pico pen",   MA_OPT_PICO_PEN, currentConfig.EmuOpt, EOPT_PICO_PEN),
 	mee_end,
 };
 
@@ -575,10 +577,13 @@ static int menu_loop_32x_options(int id, int keys)
 static const char *sms_hardwares[] = { "auto", "Game Gear", "Master System", "SG-1000", "SC-3000", NULL };
 static const char *gg_ghosting_opts[] = { "OFF", "weak", "normal", NULL };
 static const char *sms_mappers[] = { "auto", "Sega", "Codemasters", "Korea", "Korea MSX", "Korea X-in-1", "Korea 4-Pak", "Korea Janggun", "Korea Nemesis", "Taiwan 8K RAM", "Korea XOR", "Sega 32K RAM", NULL };
+static const char *sms_tmspalette[] = { "SMS", "SG-1000" };
 
 static const char h_smsfm[] = "FM sound is only supported by few games,\n"
 				"some games may crash with FM enabled";
 static const char h_ghost[] = "Simulate the inertia of the GG LCD display";
+static const char h_smspal[] = "Selects the color palette used for SMS games\n"
+				"using the original TMS9918 graphics modes";
 
 static menu_entry e_menu_sms_options[] =
 {
@@ -586,6 +591,7 @@ static menu_entry e_menu_sms_options[] =
 	mee_enum      ("Cartridge mapping", MA_SMSOPT_MAPPER, PicoIn.mapper, sms_mappers),
 	mee_enum_h    ("Game Gear LCD ghosting", MA_SMSOPT_GHOSTING, currentConfig.ghosting, gg_ghosting_opts, h_ghost),
 	mee_onoff_h   ("FM Sound Unit",     MA_OPT2_ENABLE_YM2413, PicoIn.opt, POPT_EN_YM2413, h_smsfm),
+	mee_enum_h    ("SMS palette in TMS mode", MA_SMSOPT_TMSPALETTE, PicoIn.tmsPalette, sms_tmspalette, h_smspal),
 	mee_end,
 };
 
@@ -928,14 +934,6 @@ static const char *mgn_opt_region(int id, int *offs)
 	}
 }
 
-static const char *mgn_saveloadcfg(int id, int *offs)
-{
-	strcpy(static_buff, "   ");
-	if (config_slot != 0)
-		sprintf(static_buff, "[%i]", config_slot);
-	return static_buff;
-}
-
 static const char h_hotkeysvld[] = "Slot used for save/load by emulator hotkey";
 
 static menu_entry e_menu_options[] =
@@ -1249,10 +1247,8 @@ static int main_menu_handler(int id, int keys)
 		break;
 	case MA_MAIN_LOAD_ROM:
 		rom_fname_reload = NULL;
-		ret_name = menu_loop_romsel(rom_fname_loaded,
-			sizeof(rom_fname_loaded), rom_exts, NULL);
-//		ret_name = menu_loop_romsel_d(rom_fname_loaded,
-//			sizeof(rom_fname_loaded), rom_exts, NULL, menu_draw_prep);
+		ret_name = menu_loop_romsel_d(rom_fname_loaded,
+			sizeof(rom_fname_loaded), rom_exts, NULL, menu_draw_prep);
 		if (ret_name != NULL) {
 			lprintf("selected file: %s\n", ret_name);
 			rom_fname_reload = ret_name;
@@ -1289,6 +1285,34 @@ static int main_menu_handler(int id, int keys)
 	}
 
 	return 0;
+}
+
+static const char *mgn_picopage(int id, int *offs)
+{
+	strcpy(static_buff, "   ");
+	sprintf(static_buff, "%i", PicoPicohw.page);
+	return static_buff;
+}
+
+static int mh_picopage(int id, int keys)
+{
+	int ret;
+
+	if (keys & (PBTN_LEFT|PBTN_RIGHT)) { // multi choice
+		PicoPicohw.page += (keys & PBTN_LEFT) ? -1 : 1;
+		if (PicoPicohw.page < 0) PicoPicohw.page = 6;
+		else if (PicoPicohw.page > 6) PicoPicohw.page = 0;
+		return 0;
+	}
+	return 1;
+}
+
+static const char *mgn_saveloadcfg(int id, int *offs)
+{
+	strcpy(static_buff, "   ");
+	if (config_slot != 0)
+		sprintf(static_buff, "[%i]", config_slot);
+	return static_buff;
 }
 
 static int mh_saveloadcfg(int id, int keys)
@@ -1332,10 +1356,11 @@ static menu_entry e_menu_main[] =
 	mee_label     (""),
 	mee_label     (""),
 	mee_handler_id("Resume game",        MA_MAIN_RESUME_GAME, main_menu_handler),
-	mee_handler_id("Save State",         MA_MAIN_SAVE_STATE,  main_menu_handler),
-	mee_handler_id("Load State",         MA_MAIN_LOAD_STATE,  main_menu_handler),
+	mee_handler_id("Save state",         MA_MAIN_SAVE_STATE,  main_menu_handler),
+	mee_handler_id("Load state",         MA_MAIN_LOAD_STATE,  main_menu_handler),
 	mee_handler_id("Reset game",         MA_MAIN_RESET_GAME,  main_menu_handler),
 	mee_handler_id("Change CD",          MA_MAIN_CHANGE_CD,   main_menu_handler),
+	mee_cust_s_h  ("Storyware page",     MA_MAIN_PICO_PAGE, 0,mh_picopage, mgn_picopage, NULL),
 	mee_handler_id("Patches / GameGenie",MA_MAIN_PATCHES,     main_menu_handler),
 	mee_handler_id("Load new game",      MA_MAIN_LOAD_ROM,    main_menu_handler),
 	mee_handler   ("Change options",                          menu_loop_options),
@@ -1356,6 +1381,7 @@ void menu_loop(void)
 	me_enable(e_menu_main, MA_MAIN_LOAD_STATE,  PicoGameLoaded);
 	me_enable(e_menu_main, MA_MAIN_RESET_GAME,  PicoGameLoaded);
 	me_enable(e_menu_main, MA_MAIN_CHANGE_CD,   PicoIn.AHW & PAHW_MCD);
+	me_enable(e_menu_main, MA_MAIN_PICO_PAGE,   PicoIn.AHW & PAHW_PICO);
 	me_enable(e_menu_main, MA_MAIN_PATCHES,     PicoPatches != NULL);
 	me_enable(e_menu_main, MA_OPT_SAVECFG_GAME, PicoGameLoaded);
 	me_enable(e_menu_main, MA_OPT_LOADCFG,      PicoGameLoaded && config_slot != config_slot_current);
@@ -1383,10 +1409,8 @@ static int mh_tray_load_cd(int id, int keys)
 	const char *ret_name;
 
 	rom_fname_reload = NULL;
-	ret_name = menu_loop_romsel(rom_fname_loaded,
-			sizeof(rom_fname_loaded), rom_exts, NULL);
-//	ret_name = menu_loop_romsel_d(rom_fname_loaded,
-//			sizeof(rom_fname_loaded), rom_exts, NULL, menu_draw_prep);
+	ret_name = menu_loop_romsel_d(rom_fname_loaded,
+			sizeof(rom_fname_loaded), rom_exts, NULL, menu_draw_prep);
 	if (ret_name == NULL)
 		return 0;
 

@@ -37,32 +37,17 @@
 
 static struct vout_fbdev *main_fb, *layer_fb;
 // g_layer_* - in use, g_layer_c* - configured custom
-int g_layer_cx, g_layer_cy, g_layer_cw, g_layer_ch;
+int g_layer_cx = 80, g_layer_cy, g_layer_cw = 640, g_layer_ch = 480;
+int saved_start_line = 0, saved_line_count = 240;
+int saved_start_col = 0, saved_col_count = 320;
 static int g_layer_x, g_layer_y;
 static int g_layer_w = 320, g_layer_h = 240;
-static int g_osd_fps_x, g_osd_y, doing_bg_frame;
+static int g_osd_start_x, g_osd_fps_x, g_osd_y, doing_bg_frame;
 
 static unsigned char __attribute__((aligned(4))) fb_copy[320 * 240 * 2];
 static void *temp_frame;
 const char *renderer_names[] = { NULL };
 const char *renderer_names32x[] = { NULL };
-
-static const char * const pandora_gpio_keys[KEY_MAX + 1] = {
-	[0 ... KEY_MAX] = NULL,
-	[KEY_UP]	= "Up",
-	[KEY_LEFT]	= "Left",
-	[KEY_RIGHT]	= "Right",
-	[KEY_DOWN]	= "Down",
-	[KEY_HOME]	= "A",
-	[KEY_PAGEDOWN]	= "X",
-	[KEY_END]	= "B",
-	[KEY_PAGEUP]	= "Y",
-	[KEY_RIGHTSHIFT]= "L",
-	[KEY_RIGHTCTRL]	= "R",
-	[KEY_LEFTALT]	= "Start",
-	[KEY_LEFTCTRL]	= "Select",
-	[KEY_MENU]	= "Pandora",
-};
 
 static struct in_default_bind in_evdev_defbinds[] =
 {
@@ -91,6 +76,7 @@ static struct in_default_bind in_evdev_defbinds[] =
 	{ KEY_5,	IN_BINDTYPE_EMU, PEVB_PICO_PPREV },
 	{ KEY_6,	IN_BINDTYPE_EMU, PEVB_PICO_PNEXT },
 	{ KEY_7,	IN_BINDTYPE_EMU, PEVB_PICO_SWINP },
+	{ KEY_8,	IN_BINDTYPE_EMU, PEVB_PICO_PEN },
 	{ 0, 0, 0 }
 };
 
@@ -141,31 +127,35 @@ static void draw_cd_leds(void)
 	int old_reg;
 	old_reg = Pico_mcd->s68k_regs[0];
 
-	if (0) {
-		// 8-bit modes
-		unsigned int col_g = (old_reg & 2) ? 0xc0c0c0c0 : 0xe0e0e0e0;
-		unsigned int col_r = (old_reg & 1) ? 0xd0d0d0d0 : 0xe0e0e0e0;
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*2+ 4) =
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*3+ 4) =
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*4+ 4) = col_g;
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*2+12) =
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*3+12) =
-		*(unsigned int *)((char *)g_screen_ptr + g_screen_width*4+12) = col_r;
-	} else {
-		// 16-bit modes
-		unsigned int *p = (unsigned int *)((short *)g_screen_ptr + g_screen_width*2+4);
-		unsigned int col_g = (old_reg & 2) ? 0x06000600 : 0;
-		unsigned int col_r = (old_reg & 1) ? 0xc000c000 : 0;
-		*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r; p += g_screen_width/2 - 12/2;
-		*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r; p += g_screen_width/2 - 12/2;
-		*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r;
-	}
+	// 16-bit modes
+	unsigned int *p = (unsigned int *)((short *)g_screen_ptr + g_screen_width*2+4);
+	unsigned int col_g = (old_reg & 2) ? 0x06000600 : 0;
+	unsigned int col_r = (old_reg & 1) ? 0xc000c000 : 0;
+	*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r; p += g_screen_width/2 - 12/2;
+	*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r; p += g_screen_width/2 - 12/2;
+	*p++ = col_g; *p++ = col_g; p+=2; *p++ = col_r; *p++ = col_r;
+}
+
+static void draw_pico_ptr(void)
+{
+	int x = pico_pen_x, y = pico_pen_y, pitch = g_screen_ppitch;
+	unsigned short *p = (unsigned short *)g_screen_ptr;
+
+	x = (x * saved_col_count * ((1ULL<<32) / 320)) >> 32;
+	y = (y * saved_line_count * ((1ULL<<32) / 224)) >> 32;
+	p += (saved_start_col+x) + (saved_start_line+y) * pitch;
+
+				p[-pitch] ^= 0xffff;
+	p[-1] ^= 0xffff;	p[0]      ^= 0xffff;	p[1] ^= 0xffff;
+				p[pitch]  ^= 0xffff;
 }
 
 void pemu_finalize_frame(const char *fps, const char *notice)
 {
+	if ((PicoIn.AHW & PAHW_PICO) && (currentConfig.EmuOpt & EOPT_PICO_PEN))
+		if (pico_inp_mode) draw_pico_ptr();
 	if (notice && notice[0])
-		emu_osd_text16(2, g_osd_y, notice);
+		emu_osd_text16(2 + g_osd_start_x, g_osd_y, notice);
 	if (fps && fps[0] && (currentConfig.EmuOpt & EOPT_SHOW_FPS))
 		emu_osd_text16(g_osd_fps_x, g_osd_y, fps);
 	if ((PicoIn.AHW & PAHW_MCD) && (currentConfig.EmuOpt & EOPT_EN_CD_LEDS))
@@ -315,6 +305,13 @@ static int pnd_setup_layer_(int fd, int enabled, int x, int y, int w, int h)
 
 int pnd_setup_layer(int enabled, int x, int y, int w, int h)
 {
+	// it's not allowed for the layer to be partially offscreen,
+	// instead it is faked by emu_video_mode_change()
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > 800) w = 800 - x;
+	if (y + h > 480) h = 480 - y;
+
 	return pnd_setup_layer_(vout_fbdev_get_fd(layer_fb), enabled, x, y, w, h);
 }
 
@@ -333,26 +330,22 @@ void pnd_restore_layer_data(void)
 
 void emu_video_mode_change(int start_line, int line_count, int start_col, int col_count)
 {
-	int fb_w = 320, fb_h = 240, fb_left = 0, fb_right = 0, fb_top = 0, fb_bottom = 0;
+	int fb_w, fb_h = 240, fb_left = 0, fb_right = 0, fb_top = 0, fb_bottom = 0;
 
 	if (doing_bg_frame)
 		return;
 
-	fb_w = col_count;
-	fb_left = start_col;
-	fb_right = 320 - (fb_w+fb_left);;
-
 	switch (currentConfig.scaling) {
 	case SCALE_1x1:
-		g_layer_w = fb_w;
+		g_layer_w = col_count;
 		g_layer_h = fb_h;
 		break;
 	case SCALE_2x2_3x2:
-		g_layer_w = fb_w * (col_count < 320 ? 3 : 2);
+		g_layer_w = col_count * (col_count < 320 ? 3 : 2);
 		g_layer_h = fb_h * 2;
 		break;
 	case SCALE_2x2_2x2:
-		g_layer_w = fb_w * 2;
+		g_layer_w = col_count * 2;
 		g_layer_h = fb_h * 2;
 		break;
 	case SCALE_FULLSCREEN:
@@ -377,18 +370,38 @@ void emu_video_mode_change(int start_line, int line_count, int start_col, int co
 	case SCALE_FULLSCREEN:
 	case SCALE_CUSTOM:
 		fb_top = start_line;
-		fb_h = line_count;
+		fb_h = start_line + line_count;
 		break;
 	}
-	g_osd_fps_x = col_count < 320 ? 232 : 264;
-	g_osd_y = fb_top + fb_h - 8;
+	fb_w = 320;
+	fb_left = start_col;
+	fb_right = 320 - (start_col + col_count);
+	if (currentConfig.scaling == SCALE_CUSTOM) {
+		int right = g_layer_x + g_layer_w;
+		int bottom = g_layer_y + g_layer_h;
+		if (g_layer_x < 0)
+			fb_left += -g_layer_x * col_count / g_menuscreen_w;
+		if (g_layer_y < 0)
+			fb_top += -g_layer_y * line_count / g_menuscreen_h;
+		if (right > g_menuscreen_w)
+			fb_right += (right - g_menuscreen_w) * col_count / g_menuscreen_w;
+		if (bottom > g_menuscreen_h)
+			fb_bottom += (bottom - g_menuscreen_h) * line_count / g_menuscreen_h;
+	}
+	fb_w -= fb_left + fb_right;
+	fb_h -= fb_top + fb_bottom;
 
 	pnd_setup_layer(1, g_layer_x, g_layer_y, g_layer_w, g_layer_h);
 	vout_fbdev_resize(layer_fb, fb_w, fb_h, 16, fb_left, fb_right, fb_top, fb_bottom, 4, 0);
 	vout_fbdev_clear(layer_fb);
 	plat_video_flip();
 
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	g_osd_start_x = start_col;
+	g_osd_fps_x = start_col + col_count - 5*8 - 2;
+	g_osd_y = fb_top + fb_h - 8;
+
+	saved_start_line = start_line, saved_line_count = line_count;
+	saved_start_col = start_col, saved_col_count = col_count;
 }
 
 void plat_video_loop_prepare(void)
@@ -397,6 +410,7 @@ void plat_video_loop_prepare(void)
 	memset(g_menuscreen_ptr, 0, g_menuscreen_w * g_menuscreen_h * 2);
 	g_menuscreen_ptr = vout_fbdev_flip(main_fb);
 
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	// emu_video_mode_change will call pnd_setup_layer()
 }
 
@@ -411,6 +425,7 @@ void pemu_loop_prep(void)
 
 void pemu_loop_end(void)
 {
+	memset(fb_copy, 0, sizeof(fb_copy));
 	/* do one more frame for menu bg */
 	pemu_forced_frame(0, 1);
 
@@ -443,6 +458,11 @@ void plat_wait_till_us(unsigned int us_to)
 void *plat_mem_get_for_drc(size_t size)
 {
 	return NULL;
+}
+
+int plat_parse_arg(int argc, char *argv[], int *x)
+{
+	return 1;
 }
 
 void plat_early_init(void)

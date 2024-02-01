@@ -3,6 +3,7 @@
 
 #include "../libpicofe/input.h"
 #include "../libpicofe/in_sdl.h"
+#include "../libpicofe/plat.h"
 #include "../common/input_pico.h"
 #include "../common/plat_sdl.h"
 
@@ -29,11 +30,12 @@ const struct in_default_bind in_sdl_defbinds[] = {
 	{ SDLK_F6,     IN_BINDTYPE_EMU, PEVB_PICO_PPREV },
 	{ SDLK_F7,     IN_BINDTYPE_EMU, PEVB_PICO_PNEXT },
 	{ SDLK_F8,     IN_BINDTYPE_EMU, PEVB_PICO_SWINP },
+	{ SDLK_F9,     IN_BINDTYPE_EMU, PEVB_PICO_PEN },
 	{ SDLK_BACKSPACE, IN_BINDTYPE_EMU, PEVB_FF },
 	{ 0, 0, 0 }
 };
 
-const struct menu_keymap in_sdl_key_map[] = {
+const struct menu_keymap _in_sdl_key_map[] = {
 	{ SDLK_UP,	PBTN_UP },
 	{ SDLK_DOWN,	PBTN_DOWN },
 	{ SDLK_LEFT,	PBTN_LEFT },
@@ -45,9 +47,10 @@ const struct menu_keymap in_sdl_key_map[] = {
 	{ SDLK_TAB,	PBTN_R },
 	{ SDLK_BACKSPACE, PBTN_L },
 };
-const int in_sdl_key_map_sz = sizeof(in_sdl_key_map) / sizeof(in_sdl_key_map[0]);
+const int in_sdl_key_map_sz = sizeof(_in_sdl_key_map) / sizeof(_in_sdl_key_map[0]);
+const struct menu_keymap *in_sdl_key_map = _in_sdl_key_map;
 
-const struct menu_keymap in_sdl_joy_map[] = {
+const struct menu_keymap _in_sdl_joy_map[] = {
 	{ SDLK_UP,	PBTN_UP },
 	{ SDLK_DOWN,	PBTN_DOWN },
 	{ SDLK_LEFT,	PBTN_LEFT },
@@ -58,6 +61,11 @@ const struct menu_keymap in_sdl_joy_map[] = {
 	{ SDLK_WORLD_2,	PBTN_MA2 },
 	{ SDLK_WORLD_3,	PBTN_MA3 },
 };
-const int in_sdl_joy_map_sz = sizeof(in_sdl_joy_map) / sizeof(in_sdl_joy_map[0]);
+const int in_sdl_joy_map_sz = sizeof(_in_sdl_joy_map) / sizeof(_in_sdl_joy_map[0]);
+const struct menu_keymap *in_sdl_joy_map = _in_sdl_joy_map;
 
-const char * const (*in_sdl_key_names)[SDLK_LAST] = NULL;
+const char * const *in_sdl_key_names = NULL;
+
+void plat_target_setup_input(void)
+{
+}

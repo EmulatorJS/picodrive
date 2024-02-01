@@ -28,9 +28,57 @@ static struct area { int w, h; } area;
 
 static struct in_pdata in_sdl_platform_data = {
 	.defbinds = in_sdl_defbinds,
-	.key_map = in_sdl_key_map,
-	.joy_map = in_sdl_joy_map,
 };
+
+struct plat_target plat_target;
+
+#if defined __MIYOO__
+const char *plat_device = "miyoo";
+#elif defined __GCW0__
+const char *plat_device = "gcw0";
+#elif defined __RETROFW__
+const char *plat_device = "retrofw";
+#elif defined __DINGUX__
+const char *plat_device = "dingux";
+#else
+const char *plat_device = "";
+#endif
+
+int plat_parse_arg(int argc, char *argv[], int *x)
+{
+#if defined __OPENDINGUX__
+	if (*plat_device == '\0' && strcasecmp(argv[*x], "-device") == 0) {
+		plat_device = argv[++(*x)];
+		return 0;
+	}
+#endif
+	return 1;
+}
+
+void plat_early_init(void)
+{
+}
+
+int plat_target_init(void)
+{
+#if defined __ODBETA__
+	if (*plat_device == '\0') {
+		/* ODbeta should always have a device tree, get the model info from there */
+		FILE *f = fopen("/proc/device-tree/compatible", "r");
+		if (f) {
+			char buf[10];
+			int c = fread(buf, 1, sizeof(buf), f);
+			if (strncmp(buf, "gcw,", 4) == 0)
+				plat_device = "gcw0";
+		}
+	}
+#endif
+	return 0;
+}
+
+void plat_target_finish(void)
+{
+}
 
 /* YUV stuff */
 static int yuv_ry[32], yuv_gy[32], yuv_by[32];
@@ -323,17 +371,24 @@ void plat_video_loop_prepare(void)
 	plat_video_set_buffer(g_screen_ptr);
 }
 
-void plat_early_init(void)
-{
-}
-
 static void plat_sdl_resize(int w, int h)
 {
 	// take over new settings
 	if (plat_sdl_screen->w != area.w || plat_sdl_screen->h != area.h) {
-		g_menuscreen_h = plat_sdl_screen->h;
-		g_menuscreen_w = plat_sdl_screen->w;
-		resize_buffers();
+#if defined(__OPENDINGUX__)
+        if (currentConfig.vscaling != EOPT_SCALE_HW &&
+                plat_sdl_screen->w == 320 &&
+                plat_sdl_screen->h == 480) {
+		    g_menuscreen_h = 240;
+		    g_menuscreen_w = 320;
+
+        } else
+#endif
+        {
+		    g_menuscreen_h = plat_sdl_screen->h;
+		    g_menuscreen_w = plat_sdl_screen->w;
+        }
+        resize_buffers();
 		rendstatus_old = -1;
 	}
 }
@@ -351,7 +406,7 @@ void plat_init(void)
 	ret = plat_sdl_init();
 	if (ret != 0)
 		exit(1);
-#if defined(__RG350__) || defined(__GCW0__) || defined(__OPENDINGUX__) || defined(__RG99__)
+#if defined(__OPENDINGUX__)
 	// opendingux on JZ47x0 may falsely report a HW overlay, fix to window
 	plat_target.vout_method = 0;
 #endif
@@ -381,18 +436,17 @@ void plat_init(void)
 	g_screen_ppitch = 320;
 	g_screen_ptr = shadow_fb;
 
+	plat_target_setup_input();
 	in_sdl_platform_data.kmap_size = in_sdl_key_map_sz,
+	in_sdl_platform_data.key_map = in_sdl_key_map,
 	in_sdl_platform_data.jmap_size = in_sdl_joy_map_sz,
-	in_sdl_platform_data.key_names = *in_sdl_key_names,
+	in_sdl_platform_data.joy_map = in_sdl_joy_map,
+	in_sdl_platform_data.key_names = in_sdl_key_names,
 	in_sdl_init(&in_sdl_platform_data, plat_sdl_event_handler);
 	in_probe();
 
-#if defined(__RG99__)
-	// do not use the default resolution
-	plat_sdl_change_video_mode(320, 240, 1);
-#endif
-
 	bgr_to_uyvy_init();
+	linux_menu_init();
 }
 
 void plat_finish(void)

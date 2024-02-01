@@ -39,7 +39,7 @@ jobs:
       run: |
         git config --global --add safe.directory $PWD
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
-        ./configure --platform=gp2x
+        ./configure --platform=gph
         make -j2 PLATFORM_MP3=0
         make -C platform/gp2x rel VER=$ver
         mv PicoDrive_$ver.zip PicoDrive-gph_$ver.zip
@@ -62,17 +62,17 @@ jobs:
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
         ./configure --platform=pandora
         make -j2
-        mv PicoDrive PicoDrive-pandora
-        ${CROSS_COMPILE}strip PicoDrive-pandora
+        make -C platform/pandora rel VER=$ver
+        mv platform/pandora/PicoDrive_*.pnd .
     - name: artifacts
       uses: actions/upload-artifact@v3
       with:
         name: Pandora
-        path: PicoDrive-pandora
+        path: PicoDrive_*.pnd
 
   build-psp:
     runs-on: ubuntu-latest
-    container: ghcr.io/pspdev/pspdev
+    container: pspdev/pspdev
     steps:
     - name: build environment
       run: |
@@ -128,7 +128,7 @@ jobs:
       run: |
         git config --global --add safe.directory $PWD
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
-        ./configure --platform=gcw0
+        ./configure --platform=opendingux-gcw0
         make -j2
         mv PicoDrive.opk PicoDrive-gcw0-$ver.opk
     - name: artifacts
@@ -161,19 +161,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: read
-    container: miyoocfw/toolchain
+    container: ghcr.io/irixxxx/toolchain-miyoo
     steps:
     - uses: actions/checkout@v3
       with:
         submodules: true
     - name: build
       run: |
-        export CROSS_COMPILE=arm-buildroot-linux-musleabi-
-        git config --global --add safe.directory /home/picodrive
+        git config --global --add safe.directory $PWD
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
         ./configure --platform=miyoo
         make -j2
-        mv PicoDrive.zip PicoDrive-miyoo-$ver.zip
+        mv PicoDrive-miyoo.zip PicoDrive-miyoo-$ver.zip
     - name: artifacts
       uses: actions/upload-artifact@v3
       with:
@@ -211,7 +210,7 @@ jobs:
       run: |
         git config --global --add safe.directory $PWD
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
-        ./configure --platform=opendingux
+        ./configure --platform=odbeta
         make -j2
         mv PicoDrive.opk PicoDrive-odbeta-gcw0-$ver.opk
     - name: artifacts
@@ -231,11 +230,31 @@ jobs:
       run: |
         git config --global --add safe.directory $PWD
         ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
-        ./configure --platform=opendingux
+        ./configure --platform=odbeta
         make -j2
         mv PicoDrive.opk PicoDrive-odbeta-lepus-$ver.opk
     - name: artifacts
       uses: actions/upload-artifact@v3
       with:
         name: ODbeta lepus
+        path: PicoDrive-odbeta-*.opk
+
+  build-odbeta-rg99:
+    runs-on: ubuntu-latest
+    container: ghcr.io/irixxxx/toolchain-odbeta-rs90
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+    - name: build
+      run: |
+        git config --global --add safe.directory $PWD
+        ver=$(cut -d'"' -f2 platform/common/version.h)-$(git rev-parse --short HEAD)
+        ./configure --platform=odbeta
+        make -j2
+        mv PicoDrive.opk PicoDrive-odbeta-rg99-$ver.opk
+    - name: artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ODbeta rg99
         path: PicoDrive-odbeta-*.opk
