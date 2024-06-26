@@ -1,6 +1,7 @@
 /*
  * PicoDrive
  * (C) notaz, 2007-2010
+ * (C) irixxxx, 2019-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -19,6 +20,7 @@
 #include "../libpicofe/fonts.h"
 #include "../libpicofe/sndout.h"
 #include "../libpicofe/lprintf.h"
+#include "../libpicofe/readpng.h"
 #include "../libpicofe/plat.h"
 #include "emu.h"
 #include "input_pico.h"
@@ -618,7 +620,7 @@ void emu_prep_defconfig(void)
 {
 	memset(&defaultConfig, 0, sizeof(defaultConfig));
 	defaultConfig.EmuOpt    = EOPT_EN_SRAM | EOPT_EN_SOUND | EOPT_16BPP |
-				  EOPT_EN_CD_LEDS | EOPT_GZIP_SAVES | 0x10/*?*/;
+				  EOPT_EN_CD_LEDS | EOPT_GZIP_SAVES | EOPT_PICO_PEN;
 	defaultConfig.s_PicoOpt = POPT_EN_SNDFILTER|POPT_EN_GG_LCD|POPT_EN_YM2413 |
 				  POPT_EN_STEREO|POPT_EN_FM|POPT_EN_PSG|POPT_EN_Z80 |
 				  POPT_EN_MCD_PCM|POPT_EN_MCD_CDDA|POPT_EN_MCD_GFX |
@@ -1041,20 +1043,76 @@ void emu_reset_game(void)
 	reset_timing = 1;
 }
 
-void run_events_pico(unsigned int events)
+static int pico_page;
+static int pico_w, pico_h;
+static u16 *pico_overlay;
+
+static u16 *load_pico_overlay(int page, int w, int h)
 {
-	if (events & PEV_PICO_SWINP) {
-		pico_inp_mode++;
-		if (pico_inp_mode > 2)
-			pico_inp_mode = 0;
-		switch (pico_inp_mode) {
-			case 2: emu_status_msg("Input: Pen on Pad"); break;
-			case 1: emu_status_msg("Input: Pen on Storyware"); break;
-			case 0: emu_status_msg("Input: Joystick");
-				PicoPicohw.pen_pos[0] = PicoPicohw.pen_pos[1] = 0x8000;
-				break;
+	static const char *pic_exts[] = { "png", "PNG" };
+	char *ext, *fname = NULL;
+	int extpos, i;
+
+	if (pico_page == page && pico_w == w && pico_h == h)
+		return pico_overlay;
+	pico_page = page;
+	pico_w = w, pico_h = h;
+
+	ext = strrchr(rom_fname_loaded, '.');
+	extpos = ext ? ext-rom_fname_loaded : strlen(rom_fname_loaded);
+	strcpy(static_buff, rom_fname_loaded);
+	static_buff[extpos++] = '_';
+	if (page < 0) {
+		static_buff[extpos++] = 'p';
+		static_buff[extpos++] = 'a';
+		static_buff[extpos++] = 'd';
+	} else
+		static_buff[extpos++] = '0'+PicoPicohw.page;
+	static_buff[extpos++] = '.';
+
+	for (i = 0; i < ARRAY_SIZE(pic_exts); i++) {
+		strcpy(static_buff+extpos, pic_exts[i]);
+		if (access(static_buff, R_OK) == 0) {
+			printf("found Pico file: %s\n", static_buff);
+			fname = static_buff;
+			break;
 		}
 	}
+
+	pico_overlay = realloc(pico_overlay, w*h*2);
+	memset(pico_overlay, 0, w*h*2);
+	if (!fname || !pico_overlay || readpng(pico_overlay, fname, READPNG_SCALE, w, h)) {
+		if (pico_overlay)
+			free(pico_overlay);
+		pico_overlay = NULL;
+	}
+
+	return pico_overlay;
+}
+
+void emu_pico_overlay(u16 *pd, int w, int h, int pitch)
+{
+	u16 *overlay = NULL;
+	int y, oh = h;
+
+	// get overlay
+	if (pico_inp_mode == 1) {
+		oh = (w/2 < h ? w/2 : h); // storyware has squished h
+		overlay = load_pico_overlay(PicoPicohw.page, w, oh);
+	} else if (pico_inp_mode == 2)
+		overlay = load_pico_overlay(-1, w, oh);
+
+	// copy overlay onto buffer
+	if (overlay) {
+		for (y = 0; y < oh; y++)
+			memcpy(pd + y*pitch, overlay + y*w, w*2);
+		if (y < h)
+			memset(pd + y*pitch, 0, w*2);
+	}
+}
+
+void run_events_pico(unsigned int events)
+{
 	if (events & PEV_PICO_PPREV) {
 		PicoPicohw.page--;
 		if (PicoPicohw.page < 0)
@@ -1067,11 +1125,35 @@ void run_events_pico(unsigned int events)
 			PicoPicohw.page = 6;
 		emu_status_msg("Page %i", PicoPicohw.page);
 	}
-	if (events & PEV_PICO_PEN) {
-		currentConfig.EmuOpt ^= EOPT_PICO_PEN;
-		emu_status_msg("%s Pen", currentConfig.EmuOpt & EOPT_PICO_PEN ? "Show" : "Hide");
+	if (events & PEV_PICO_STORY) {
+		if (pico_inp_mode == 1) {
+			pico_inp_mode = 0;
+			emu_status_msg("Input: D-Pad");
+		} else {
+			pico_inp_mode = 1;
+			emu_status_msg("Input: Pen on Storyware");
+		}
+	}
+	if (events & PEV_PICO_PAD) {
+		if (pico_inp_mode == 2) {
+			pico_inp_mode = 0;
+			emu_status_msg("Input: D-Pad");
+		} else {
+			pico_inp_mode = 2;
+			emu_status_msg("Input: Pen on Pad");
+		}
+	}
+	if (events & PEV_PICO_PENST) {
+		PicoPicohw.pen_pos[0] ^= 0x8000;
+		PicoPicohw.pen_pos[1] ^= 0x8000;
+		emu_status_msg("Pen %s", PicoPicohw.pen_pos[0] & 0x8000 ? "Up" : "Down");
 	}
 
+	if ((currentConfig.EmuOpt & EOPT_PICO_PEN) &&
+			(PicoIn.pad[0]&0x20) && pico_inp_mode && pico_overlay) {
+		pico_inp_mode = 0;
+		emu_status_msg("Input: D-Pad");
+	}
 	if (pico_inp_mode == 0)
 		return;
 
@@ -1082,17 +1164,20 @@ void run_events_pico(unsigned int events)
 	if (PicoIn.pad[0] & 8) pico_pen_x++;
 	PicoIn.pad[0] &= ~0x0f; // release UDLR
 
+	/* cursor position, cursor drawing must not cross screen borders */
 	if (pico_pen_y < PICO_PEN_ADJUST_Y)
 		pico_pen_y = PICO_PEN_ADJUST_Y;
-	if (pico_pen_y > 224 - PICO_PEN_ADJUST_Y)
-		pico_pen_y = 224 - PICO_PEN_ADJUST_Y;
+	if (pico_pen_y > 223-1 - PICO_PEN_ADJUST_Y)
+		pico_pen_y = 223-1 - PICO_PEN_ADJUST_Y;
 	if (pico_pen_x < PICO_PEN_ADJUST_X)
 		pico_pen_x = PICO_PEN_ADJUST_X;
-	if (pico_pen_x > 320 - PICO_PEN_ADJUST_X)
-		pico_pen_x = 320 - PICO_PEN_ADJUST_X;
+	if (pico_pen_x > 319-1 - PICO_PEN_ADJUST_X)
+		pico_pen_x = 319-1 - PICO_PEN_ADJUST_X;
 
-	PicoPicohw.pen_pos[0] = 0x03c + pico_pen_x;
-	PicoPicohw.pen_pos[1] = pico_inp_mode == 1 ? (0x2f8 + pico_pen_y) : (0x1fc + pico_pen_y);
+	PicoPicohw.pen_pos[0] &= 0x8000;
+	PicoPicohw.pen_pos[1] &= 0x8000;
+	PicoPicohw.pen_pos[0] |= 0x03c + pico_pen_x;
+	PicoPicohw.pen_pos[1] |= (pico_inp_mode == 1 ? 0x2f8 : 0x1fc) + pico_pen_y;
 }
 
 static void do_turbo(unsigned short *pad, int acts)
@@ -1243,7 +1328,7 @@ static void mkdir_path(char *path_with_reserve, int pos, const char *name)
 	strcpy(path_with_reserve + pos, name);
 	if (plat_is_dir(path_with_reserve))
 		return;
-	if (mkdir(path_with_reserve, 0777) < 0)
+	if (mkdir(path_with_reserve, 0755) < 0)
 		lprintf("failed to create: %s\n", path_with_reserve);
 }
 
@@ -1349,15 +1434,16 @@ void emu_sound_start(void)
 	{
 		int is_stereo = (PicoIn.opt & POPT_EN_STEREO) ? 1 : 0;
 
+		memset(sndBuffer, 0, sizeof(sndBuffer));
+		PicoIn.sndOut = sndBuffer;
 		PsndRerate(Pico.m.frame_count ? 1 : 0);
 
 		printf("starting audio: %i len: %i stereo: %i, pal: %i\n",
 			PicoIn.sndRate, Pico.snd.len, is_stereo, Pico.m.pal);
+
 		sndout_start(PicoIn.sndRate, is_stereo);
 		PicoIn.writeSound = snd_write_nonblocking;
 		plat_update_volume(0, 0);
-		memset(sndBuffer, 0, sizeof(sndBuffer));
-		PicoIn.sndOut = sndBuffer;
 	}
 }
 
@@ -1395,17 +1481,17 @@ static void emu_loop_prep(void)
 }
 
 /* our tick here is 1 us right now */
-#define ms_to_ticks(x) (int)(x * 1000)
-#define get_ticks() plat_get_ticks_us()
-#define vsync_delay_x3	3*ms_to_ticks(1)
+#define ms_to_ticks(x)	(int)(x * 1000)
+#define get_ticks()	plat_get_ticks_us()
+#define vsync_delay	ms_to_ticks(1)
 
 void emu_loop(void)
 {
 	int frames_done, frames_shown;	/* actual frames for fps counter */
-	int target_frametime_x3;
-	unsigned int timestamp_x3 = 0;
-	unsigned int timestamp_aim_x3 = 0;
-	unsigned int timestamp_fps_x3 = 0;
+	int target_frametime;
+	unsigned int timestamp = 0;
+	unsigned int timestamp_aim = 0;
+	unsigned int timestamp_fps = 0;
 	char *notice_msg = NULL;
 	char fpsbuff[24];
 	int fskip_cnt = 0;
@@ -1420,9 +1506,9 @@ void emu_loop(void)
 
 	/* number of ticks per frame */
 	if (Pico.m.pal)
-		target_frametime_x3 = 3 * ms_to_ticks(1000) / 50;
+		target_frametime = ms_to_ticks(1000) / 50;
 	else
-		target_frametime_x3 = 3 * ms_to_ticks(1000) / 60;
+		target_frametime = ms_to_ticks(1000) / 60;
 
 	reset_timing = 1;
 	frames_done = frames_shown = 0;
@@ -1438,22 +1524,22 @@ void emu_loop(void)
 		if (reset_timing) {
 			reset_timing = 0;
 			plat_video_wait_vsync();
-			timestamp_aim_x3 = get_ticks() * 3;
-			timestamp_fps_x3 = timestamp_aim_x3;
+			timestamp_aim = get_ticks();
+			timestamp_fps = timestamp_aim;
 			fskip_cnt = 0;
 		}
 		else if (currentConfig.EmuOpt & EOPT_NO_FRMLIMIT) {
-			timestamp_aim_x3 = get_ticks() * 3;
+			timestamp_aim = get_ticks();
 		}
 
-		timestamp_x3 = get_ticks() * 3;
+		timestamp = get_ticks();
 
 		// show notice_msg message?
 		if (notice_msg_time != 0)
 		{
 			static int noticeMsgSum;
-			if (timestamp_x3 - ms_to_ticks(notice_msg_time) * 3
-			     > ms_to_ticks(STATUS_MSG_TIMEOUT) * 3)
+			if (timestamp - ms_to_ticks(notice_msg_time)
+			     > ms_to_ticks(STATUS_MSG_TIMEOUT))
 			{
 				notice_msg_time = 0;
 				notice_msg = NULL;
@@ -1470,7 +1556,7 @@ void emu_loop(void)
 		}
 
 		// second changed?
-		if (timestamp_x3 - timestamp_fps_x3 >= ms_to_ticks(1000) * 3)
+		if (timestamp - timestamp_fps >= ms_to_ticks(1000))
 		{
 #ifdef BENCHMARK
 			static int bench = 0, bench_fps = 0, bench_fps_s = 0, bfp = 0, bf[4];
@@ -1488,13 +1574,13 @@ void emu_loop(void)
 				snprintf(fpsbuff, 8, "%02i/%02i  ", frames_shown, frames_done);
 #endif
 			frames_shown = frames_done = 0;
-			timestamp_fps_x3 += ms_to_ticks(1000) * 3;
+			timestamp_fps += ms_to_ticks(1000);
 		}
 #ifdef PFRAMES
 		sprintf(fpsbuff, "%i", Pico.m.frame_count);
 #endif
 
-		diff = timestamp_aim_x3 - timestamp_x3;
+		diff = timestamp_aim - timestamp;
 
 		if (currentConfig.Frameskip >= 0) // frameskip enabled (or 0)
 		{
@@ -1506,7 +1592,7 @@ void emu_loop(void)
 				fskip_cnt = 0;
 			}
 		}
-		else if (diff < -target_frametime_x3)
+		else if (diff < -target_frametime)
 		{
 			/* no time left for this frame - skip */
 			/* limit auto frameskip to max_skip */
@@ -1521,14 +1607,14 @@ void emu_loop(void)
 			fskip_cnt = 0;
 
 		// don't go in debt too much
-		while (diff < -target_frametime_x3 * 3) {
-			timestamp_aim_x3 += target_frametime_x3;
-			diff = timestamp_aim_x3 - timestamp_x3;
+		while (diff < -target_frametime * 3) {
+			timestamp_aim += target_frametime;
+			diff = timestamp_aim - timestamp;
 		}
 
 		emu_update_input();
 		if (skip) {
-			int do_audio = diff > -target_frametime_x3 * 2;
+			int do_audio = diff > -target_frametime * 2;
 			PicoIn.skipFrame = do_audio ? 1 : 2;
 			PicoFrame();
 			PicoIn.skipFrame = 0;
@@ -1539,7 +1625,7 @@ void emu_loop(void)
 			frames_shown++;
 		}
 		frames_done++;
-		timestamp_aim_x3 += target_frametime_x3;
+		timestamp_aim += target_frametime;
 
 		if (!skip && !flip_after_sync)
 			plat_video_flip();
@@ -1549,18 +1635,18 @@ void emu_loop(void)
 		    && !(currentConfig.EmuOpt & (EOPT_NO_FRMLIMIT|EOPT_EXT_FRMLIMIT)))
 		{
 			unsigned int timestamp = get_ticks();
-			diff = timestamp_aim_x3 - timestamp * 3;
+			diff = timestamp_aim - timestamp;
 
 			// sleep or vsync if we are still too fast
-			if (diff > target_frametime_x3 + vsync_delay_x3 && (currentConfig.EmuOpt & EOPT_VSYNC)) {
+			if (diff > target_frametime + vsync_delay && (currentConfig.EmuOpt & EOPT_VSYNC)) {
 				// we are too fast
 				plat_video_wait_vsync();
 				timestamp = get_ticks();
-				diff = timestamp_aim_x3 - timestamp * 3;
+				diff = timestamp_aim - timestamp;
 			}
-			if (diff > target_frametime_x3 + vsync_delay_x3) {
+			if (diff > target_frametime + vsync_delay) {
 				// still too fast
-				plat_wait_till_us(timestamp + (diff - target_frametime_x3) / 3);
+				plat_wait_till_us(timestamp + (diff - target_frametime));
 			}
 		}
 

@@ -133,13 +133,13 @@ uint8 m68ki_exception_cycle_table[4][256] =
 		 50, /*  2: Bus Error                             (unemulated) */
 		 50, /*  3: Address Error                         (unemulated) */
 		 34, /*  4: Illegal Instruction                                */
-		 38, /*  5: Divide by Zero -- ASG: changed from 42             */
-		 40, /*  6: CHK -- ASG: chanaged from 44                       */
+		 34, /*  5: Divide by Zero -- ASG: changed from 42             */
+		 34, /*  6: CHK -- ASG: chanaged from 44                       */
 		 34, /*  7: TRAPV                                              */
 		 34, /*  8: Privilege Violation                                */
 		 34, /*  9: Trace                                              */
-		  4, /* 10: 1010                                               */
-		  4, /* 11: 1111                                               */
+		 34, /* 10: 1010                                               */
+		 34, /* 11: 1111                                               */
 		  4, /* 12: RESERVED                                           */
 		  4, /* 13: Coprocessor Protocol Violation        (unemulated) */
 		  4, /* 14: Format Error                                       */
@@ -206,13 +206,13 @@ uint8 m68ki_exception_cycle_table[4][256] =
 		126, /*  2: Bus Error                             (unemulated) */
 		126, /*  3: Address Error                         (unemulated) */
 		 38, /*  4: Illegal Instruction                                */
-		 44, /*  5: Divide by Zero                                     */
-		 44, /*  6: CHK                                                */
+		 38, /*  5: Divide by Zero                                     */
+		 38, /*  6: CHK                                                */
 		 34, /*  7: TRAPV                                              */
 		 38, /*  8: Privilege Violation                                */
 		 38, /*  9: Trace                                              */
-		  4, /* 10: 1010                                               */
-		  4, /* 11: 1111                                               */
+		 38, /* 10: 1010                                               */
+		 38, /* 11: 1111                                               */
 		  4, /* 12: RESERVED                                           */
 		  4, /* 13: Coprocessor Protocol Violation        (unemulated) */
 		  4, /* 14: Format Error                                       */
@@ -279,8 +279,8 @@ uint8 m68ki_exception_cycle_table[4][256] =
 		 50, /*  2: Bus Error                             (unemulated) */
 		 50, /*  3: Address Error                         (unemulated) */
 		 20, /*  4: Illegal Instruction                                */
-		 38, /*  5: Divide by Zero                                     */
-		 40, /*  6: CHK                                                */
+		 34, /*  5: Divide by Zero                                     */
+		 34, /*  6: CHK                                                */
 		 20, /*  7: TRAPV                                              */
 		 34, /*  8: Privilege Violation                                */
 		 25, /*  9: Trace                                              */
@@ -352,8 +352,8 @@ uint8 m68ki_exception_cycle_table[4][256] =
 		 50, /*  2: Bus Error                             (unemulated) */
 		 50, /*  3: Address Error                         (unemulated) */
 		 20, /*  4: Illegal Instruction                                */
-		 38, /*  5: Divide by Zero                                     */
-		 40, /*  6: CHK                                                */
+		 34, /*  5: Divide by Zero                                     */
+		 34, /*  6: CHK                                                */
 		 20, /*  7: TRAPV                                              */
 		 34, /*  8: Privilege Violation                                */
 		 25, /*  9: Trace                                              */
@@ -787,12 +787,12 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 /* ASG: removed per-instruction interrupt checks */
 int m68k_execute(int num_cycles)
 {
+	// notaz
+	m68ki_check_interrupts();
+
 	/* Make sure we're not stopped */
 	if(!CPU_STOPPED)
 	{
-		// notaz
-		m68ki_check_interrupts();
-
 		/* Set our pool of clock cycles available */
 		SET_CYCLES(num_cycles);
 		m68ki_initial_cycles = num_cycles;

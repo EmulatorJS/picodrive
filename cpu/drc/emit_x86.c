@@ -1,7 +1,7 @@
 /*
  * Basic macros to emit x86 instructions and some utils
  * Copyright (C) 2008,2009,2010 notaz
- * Copyright (C) 2019 kub
+ * Copyright (C) 2019-2024 kub
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -1269,10 +1269,11 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	if (t3 == xAX) { t3 = t1; t1 = xAX; } /* for MUL */	\
 	if (t3 == xDX) { t3 = t2; t2 = xDX; }			\
 	/* if (sr < 0) return */				\
-	emith_asrf(t2, sr, 12);					\
+	emith_cmp_r_imm(sr, 0);					\
 	EMITH_JMP_START(DCOND_LE);				\
 	/* turns = sr.cycles / cycles */			\
-	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)) + 1);	\
+	emith_asr(t2, sr, 12);					\
+	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)));	\
 	emith_mul_u64(t1, t2, t2, t3); /* multiply by 1/x */	\
 	rcache_free_tmp(t3);					\
 	if (reg >= 0) {						\
@@ -1362,16 +1363,17 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	emith_tst_r_imm(sr, S);                   \
 	EMITH_SJMP_START(DCOND_EQ);               \
 	/* overflow if top 17 bits of MACH aren't all 1 or 0 */ \
-	/* to check: add MACH[15] to MACH[31:16]. this is 0 if no overflow */ \
-	emith_asrf(rn, mh, 16); /* sum = (MACH>>16) + ((MACH>>15)&1) */ \
-	emith_adcf_r_imm(rn, 0); /* (MACH>>15) is in carry after shift */ \
-	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> ov */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x0000); /* -overflow */ \
-	emith_move_r_imm_c(DCOND_NE, mh, 0x8000); \
-	EMITH_SJMP_START(DCOND_LE); /* sum > 0 -> +ovl */ \
-	emith_sub_r_imm_c(DCOND_GT, ml, 1); /* 0xffffffff */ \
-	emith_sub_r_imm_c(DCOND_GT, mh, 1); /* 0x00007fff */ \
-	EMITH_SJMP_END(DCOND_LE);                 \
+	/* to check: add MACH >> 31 to MACH >> 15. this is 0 if no overflow */ \
+	emith_asr(rn, mh, 15);                    \
+	emith_lsr(rm, mh, 31);                    \
+	emith_addf_r_r(rn, rm);                   \
+	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> -ovl */ \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x00000000); \
+	emith_move_r_imm_c(DCOND_NE, mh, 0x00008000); \
+	EMITH_SJMP_START(DCOND_MI); /* sum < 0 -> -ovl */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0xffffffff */ \
+	emith_sub_r_imm_c(DCOND_PL, mh, 1); /* 0x00007fff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 } while (0)
@@ -1393,10 +1395,10 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> overflow */ \
 	/* XXX: LSB signalling only in SH1, or in SH2 too? */ \
 	emith_move_r_imm_c(DCOND_NE, mh, 0x00000001); /* LSB of MACH */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* negative ovrfl */ \
-	EMITH_SJMP_START(DCOND_LE); /* sum > 0 -> positive ovrfl */ \
-	emith_sub_r_imm_c(DCOND_GT, ml, 1); /* 0x7fffffff */ \
-	EMITH_SJMP_END(DCOND_LE);                 \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* -overflow */ \
+	EMITH_SJMP_START(DCOND_MI); /* sum > 0 -> +overflow */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0x7fffffff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 } while (0)

@@ -1,7 +1,7 @@
 /*
  * Basic macros to emit ARM instructions and some utils
  * Copyright (C) 2008,2009,2010 notaz
- * Copyright (C) 2019 kub
+ * Copyright (C) 2019-2024 kub
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -425,11 +425,11 @@ static void emith_flush(void)
 #define EOP_MSR_IMM(ror2,imm) EOP_C_MSR_IMM(A_COND_AL,ror2,imm)
 #define EOP_MSR_REG(rm)       EOP_C_MSR_REG(A_COND_AL,rm)
 
-#define EOP_MOVW(rd,imm) \
-	EMIT(0xe3000000 | ((rd)<<12) | ((imm)&0xfff) | (((imm)<<4)&0xf0000), M1(rd), NO)
+#define EOP_MOVW(cond,rd,imm) \
+	EMIT(((cond)<<28) | 0x03000000 | ((rd)<<12) | ((imm)&0xfff) | (((imm)<<4)&0xf0000), M1(rd), NO)
 
-#define EOP_MOVT(rd,imm) \
-	EMIT(0xe3400000 | ((rd)<<12) | (((imm)>>16)&0xfff) | (((imm)>>12)&0xf0000), M1(rd), NO)
+#define EOP_MOVT(cond,rd,imm) \
+	EMIT(((cond)<<28) | 0x03400000 | ((rd)<<12) | (((imm)>>16)&0xfff) | (((imm)>>12)&0xf0000), M1(rd), NO)
 
 // host literal pool; must be significantly smaller than 1024 (max LDR offset = 4096)
 #define MAX_HOST_LITERALS	128
@@ -486,9 +486,9 @@ static void emith_op_imm2(int cond, int s, int op, int rd, int rn, unsigned int 
 				if (op == A_OP_MVN)
 					imm = ~imm;
 				// ...prefer movw/movt
-				EOP_MOVW(rd, imm);
+				EOP_MOVW(cond,rd, imm);
 				if (imm & 0xffff0000)
-					EOP_MOVT(rd, imm);
+					EOP_MOVT(cond,rd, imm);
 				return;
 			}
 #else
@@ -512,7 +512,7 @@ static void emith_op_imm2(int cond, int s, int op, int rd, int rn, unsigned int 
 				    EOP_C_DOP_IMM(cond, A_OP_ADD, 0,rd,rd,0,o);
 				else if (o < 0)
 				    EOP_C_DOP_IMM(cond, A_OP_SUB, 0,rd,rd,0,-o);
-			return;
+				return;
 			}
 #endif
 			break;
@@ -1196,7 +1196,7 @@ static inline void emith_pool_adjust(int tcache_offs, int move_offs)
 
 #define emith_jump_at(ptr, target) do { \
 	u32 *ptr_ = (u32 *)ptr; \
-	u32 val_ = (u32 *)(target) - (u32 *)(ptr) - 2; \
+	u32 val_ = (u32 *)(target) - ptr_ - 2; \
 	EOP_C_B_PTR(ptr_, A_COND_AL, 0, val_ & 0xffffff); \
 } while (0)
 #define emith_jump_at_size() 4
@@ -1329,10 +1329,11 @@ static inline void emith_pool_adjust(int tcache_offs, int move_offs)
 	int t2 = rcache_get_tmp();				\
 	int t3 = rcache_get_tmp();				\
 	/* if (sr < 0) return */				\
-	emith_asrf(t2, sr, 12);					\
+	emith_cmp_r_imm(sr, 0);					\
 	EMITH_JMP_START(DCOND_LE);				\
 	/* turns = sr.cycles / cycles */			\
-	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)) + 1);	\
+	emith_asr(t2, sr, 12);					\
+	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)));	\
 	emith_mul_u64(t1, t2, t2, t3); /* multiply by 1/x */	\
 	rcache_free_tmp(t3);					\
 	if (reg >= 0) {						\
@@ -1362,13 +1363,11 @@ static inline void emith_pool_adjust(int tcache_offs, int move_offs)
 } while (0)
 
 #define emith_carry_to_t(srr, is_sub) do { \
-	if (is_sub) { /* has inverted C on ARM */ \
+	emith_bic_r_imm(srr, 1); \
+	if (is_sub) /* has inverted C on ARM */ \
 		emith_or_r_imm_c(A_COND_CC, srr, 1); \
-		emith_bic_r_imm_c(A_COND_CS, srr, 1); \
-	} else { \
+	else \
 		emith_or_r_imm_c(A_COND_CS, srr, 1); \
-		emith_bic_r_imm_c(A_COND_CC, srr, 1); \
-	} \
 } while (0)
 
 #define emith_t_to_carry(srr, is_sub) do { \
@@ -1428,16 +1427,16 @@ static inline void emith_pool_adjust(int tcache_offs, int move_offs)
 	emith_sext(mh, mh, 16);                   \
 	emith_mula_s64(ml, mh, rn, rm);           \
 	/* overflow if top 17 bits of MACH aren't all 1 or 0 */ \
-	/* to check: add MACH[15] to MACH[31:16]. this is 0 if no overflow */ \
-	emith_asrf(rn, mh, 16); /* sum = (MACH>>16) + ((MACH>>15)&1) */ \
-	emith_adcf_r_imm(rn, 0); /* (MACH>>15) is in carry after shift */ \
-	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> ov */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x0000); /* -overflow */ \
-	emith_move_r_imm_c(DCOND_NE, mh, 0x8000); \
-	EMITH_SJMP_START(DCOND_LE); /* sum > 0 -> +ovl */ \
-	emith_sub_r_imm_c(DCOND_GT, ml, 1); /* 0xffffffff */ \
-	emith_sub_r_imm_c(DCOND_GT, mh, 1); /* 0x00007fff */ \
-	EMITH_SJMP_END(DCOND_LE);                 \
+	/* to check: add MACH >> 31 to MACH >> 15. this is 0 if no overflow */ \
+	emith_asr(rn, mh, 15);                    \
+	emith_addf_r_r_r_lsr(rn, rn, mh, 31);     \
+	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> -ovl */ \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x00000000); \
+	emith_move_r_imm_c(DCOND_NE, mh, 0x00008000); \
+	EMITH_SJMP_START(DCOND_MI); /* sum > 0 -> +ovl */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0xffffffff */ \
+	emith_sub_r_imm_c(DCOND_PL, mh, 1); /* 0x00007fff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP2_END(DCOND_NE);                \
 } while (0)
@@ -1457,10 +1456,10 @@ static inline void emith_pool_adjust(int tcache_offs, int move_offs)
 	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> overflow */ \
 	/* XXX: LSB signalling only in SH1, or in SH2 too? */ \
 	emith_move_r_imm_c(DCOND_NE, mh, 0x00000001); /* LSB of MACH */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* negative ovrfl */ \
-	EMITH_SJMP_START(DCOND_LE); /* sum > 0 -> positive ovrfl */ \
-	emith_sub_r_imm_c(DCOND_GT, ml, 1); /* 0x7fffffff */ \
-	EMITH_SJMP_END(DCOND_LE);                 \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* -ovrfl */ \
+	EMITH_SJMP_START(DCOND_MI); /* sum > 0 -> +ovrfl */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0x7fffffff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP2_END(DCOND_NE);                \
 } while (0)
@@ -1494,7 +1493,7 @@ static void emith_sync_t(int sr)
 	else if (tcond == A_COND_NV)
 		emith_bic_r_imm(sr, T);
 	else if (tcond >= 0) {
-		emith_bic_r_imm_c(emith_invert_cond(tcond),sr, T);
+		emith_bic_r_imm(sr, T);
 		emith_or_r_imm_c(tcond, sr, T);
 	}
 	tcond = -1;

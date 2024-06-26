@@ -24,7 +24,7 @@
 #define FAMEC_CHECK_BRANCHES
 #define FAMEC_EXTRA_INLINE
 // #define FAMEC_DEBUG
-// #define FAMEC_NO_GOTOS
+#define FAMEC_NO_GOTOS
 #define FAMEC_ADR_BITS  24
 // #define FAMEC_FETCHBITS 8
 #define FAMEC_DATABITS  8
@@ -183,6 +183,11 @@
 // internals core macros
 /////////////////////////
 
+// helper macros
+#define BITCOUNT(r,v)	\
+    (r = (v) - (((v)>>1)&0x55555555), r = (r&0x33333333) + ((r>>2)&0x33333333), \
+     r = (((r + (r>>4))&0x0f0f0f0f) * 0x01010101)>>24)
+
 #define XB		MEM_LE4(0)
 #define XW		MEM_LE2(0)
 
@@ -223,25 +228,29 @@
 #define ROR_33(A, C)    (LSR_32(A, C) | LSL_32(A, 33-(C)))
 
 #ifndef FAMEC_NO_GOTOS
-#define NEXT                    \
+#define NEXT {               \
     FETCH_WORD(Opcode);         \
-    goto *JumpTable[Opcode];
+    goto *JumpTable[Opcode];    \
+}
 
 #ifdef FAMEC_ROLL_INLINE
-#define RET(A)                                      \
+#define RET(A) {                                    \
     ctx->io_cycle_counter -= (A);                        \
     if (ctx->io_cycle_counter <= 0) goto famec_Exec_End;	\
-    NEXT
+    NEXT \
+}
 #else
-#define RET(A)                                      \
+#define RET(A) {                                    \
     ctx->io_cycle_counter -= (A);                        \
     if (ctx->io_cycle_counter <= 0) goto famec_Exec_End;	\
-    goto famec_Exec;
+    goto famec_Exec; \
+}
 #endif
 
-#define RET0() \
+#define RET0() { \
     ctx->io_cycle_counter = -6; \
-    goto famec_End;
+    goto famec_End; \
+}
 
 #else
 
@@ -251,13 +260,15 @@
         JumpTable[Opcode](ctx); \
     } while (ctx->io_cycle_counter > 0);
 
-#define RET(A) \
+#define RET(A) { \
     ctx->io_cycle_counter -= (A);  \
-    return;
+    return; \
+}
 
-#define RET0() \
+#define RET0() { \
     ctx->io_cycle_counter = -6; \
-    return;
+    return; \
+}
 
 #endif
 
@@ -525,13 +536,13 @@ static const s32 exception_cycle_table[256] =
 	 50, //  2: Bus Error
 	 50, //  3: Address Error
 	 34, //  4: Illegal Instruction
-	 38, //  5: Divide by Zero
-	 40, //  6: CHK
+	 34, //  5: Divide by Zero
+	 34, //  6: CHK
 	 34, //  7: TRAPV
 	 34, //  8: Privilege Violation
 	 34, //  9: Trace
-	  4, // 10:
-	  4, // 11:
+	 34, // 10: Line A
+	 34, // 11: Line F
 	  4, // 12: RESERVED
 	  4, // 13: Coprocessor Protocol Violation
 	  4, // 14: Format Error
@@ -788,6 +799,8 @@ int fm68k_emulate(M68K_CONTEXT *ctx, int cycles, fm68k_call_reason reason)
 	case fm68k_reason_emulate:
 		break;
 	}
+	PC = ctx->PC;
+	BasePC = ctx->BasePC;
 #endif // FAMEC_NO_GOTOS
 
 	// won't emulate double fault
@@ -921,6 +934,10 @@ famec_Exec:
 famec_End:
 	ctx->sr = GET_SR;
 	ctx->pc = GET_PC;
+#ifndef FAMEC_NO_GOTOS
+	ctx->PC = PC;
+	ctx->BasePC = BasePC;
+#endif
 
 	ctx->execinfo &= ~M68K_RUNNING;
 

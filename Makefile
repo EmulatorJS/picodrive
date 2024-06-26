@@ -1,5 +1,5 @@
 $(LD) ?= $(CC)
-TARGET ?= PicoDrive
+TARGET ?= picodrive
 ASAN ?= 0
 DEBUG ?= 0
 CFLAGS += -I$(PWD)
@@ -71,6 +71,10 @@ CFLAGS += $(call chkCCflag, -fno-caller-saves -fno-guess-branch-probability -fno
 # very old gcc toolchains may not have these options
 CFLAGS += $(call chkCCflag, -fno-tree-loop-if-convert -fipa-pta -fno-ipa-cp)
 endif
+else
+ifneq ($(STATIC_LINKING), 1)
+CFLAGS += $(call chkCCflag, -flto)
+endif
 endif
 
 # revision info from repository if this not a tagged release
@@ -98,7 +102,7 @@ asm_32xmemory ?= 1
 else
 use_fame ?= 1
 use_cz80 ?= 1
-ifneq (,$(filter x86% i386% mips% aarch% riscv% powerpc% ppc%, $(ARCH)))
+ifneq (,$(filter x86% i386% i686% mips% aarch% riscv% powerpc% ppc%, $(ARCH)))
 use_sh2drc ?= 1
 endif
 endif
@@ -107,15 +111,14 @@ endif
 
 # TODO this should somehow go to the platform directory?
 ifeq "$(PLATFORM)" "generic"
-$(TARGET).zip: $(TARGET)
+PicoDrive.zip: $(TARGET)
 	$(RM) -rf .od_data
 	mkdir .od_data
 	cp -r platform/linux/skin .od_data
 	cp platform/game_def.cfg .od_data
-	cp $< .od_data/PicoDrive
-	$(STRIP) .od_data/PicoDrive
+	$(STRIP) $< -o .od_data/picodrive
 	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET).zip
+all: PicoDrive.zip
 endif
 
 ifeq "$(PLATFORM)" "opendingux"
@@ -124,33 +127,28 @@ ifeq "$(PLATFORM)" "opendingux"
 	mkdir .od_data
 	cp -r platform/opendingux/data/. .od_data
 	cp platform/game_def.cfg .od_data
-	cp $< .od_data/PicoDrive
-	$(STRIP) .od_data/PicoDrive
+	$(STRIP) $< -o .od_data/picodrive
 .PHONY: .od_data
 
 ifneq (,$(filter %__DINGUX__, $(CFLAGS)))
 # "legacy" dingux without opk support
-$(TARGET)-dge.zip: .od_data
+PicoDrive-dge.zip: .od_data
 	rm -f .od_data/default.*.desktop
 	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET)-dge.zip
+all: PicoDrive-dge.zip
 CFLAGS += -DSDL_SURFACE_SW # some legacy dinguces had bugs in HWSURFACE
 else
 ifneq (,$(filter %__MIYOO__, $(CFLAGS)))
-$(TARGET)-miyoo.zip: .od_data
+PicoDrive-miyoo.zip: .od_data
 	rm -f .od_data/default.*.desktop .od_data/PicoDrive.dge
 	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET)-miyoo.zip
+all: PicoDrive-miyoo.zip
 else
-$(TARGET).opk: .od_data
+PicoDrive.opk: .od_data
 	rm -f .od_data/PicoDrive.dge
 	mksquashfs .od_data $@ -all-root -noappend -no-exports -no-xattrs
-all: $(TARGET).opk
+all: PicoDrive.opk
 endif
-endif
-
-ifneq (,$(filter %mips32r2, $(CFLAGS)))
-CFLAGS += -DMIPS_USE_SYNCI # mips32r2 clear_cache uses SYNCI instead of a syscall
 endif
 
 OBJS += platform/opendingux/inputmap.o
@@ -237,21 +235,35 @@ OBJS += platform/psp/asm_utils.o
 OBJS += platform/psp/mp3.o
 USE_FRONTEND = 1
 endif
+ifeq "$(PLATFORM)" "ps2"
+CFLAGS += -DUSE_BGR555 # -DLOG_TO_FILE
+LDLIBS += -lpatches -lgskit -ldmakit -lps2_drivers
+OBJS += platform/ps2/plat.o
+OBJS += platform/ps2/emu.o
+OBJS += platform/ps2/in_ps2.o
+USE_FRONTEND = 1
+endif
 ifeq "$(PLATFORM)" "libretro"
 OBJS += platform/libretro/libretro.o
 ifneq ($(STATIC_LINKING), 1)
-OBJS += platform/libretro/libretro-common/compat/compat_strcasestr.o
-ifeq "$(USE_LIBRETRO_VFS)" "1"
-OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
-OBJS += platform/libretro/libretro-common/compat/compat_strl.o
-OBJS += platform/libretro/libretro-common/compat/fopen_utf8.o
-OBJS += platform/libretro/libretro-common/encodings/encoding_utf.o
-OBJS += platform/libretro/libretro-common/string/stdstring.o
-OBJS += platform/libretro/libretro-common/time/rtime.o
-OBJS += platform/libretro/libretro-common/streams/file_stream.o
-OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
+CFLAGS += -DHAVE_ZLIB
+OBJS += platform/libretro/libretro-common/formats/png/rpng.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream_pipe.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream_zlib.o
+OBJS += platform/libretro/libretro-common/file/file_path_io.o
 OBJS += platform/libretro/libretro-common/file/file_path.o
 OBJS += platform/libretro/libretro-common/vfs/vfs_implementation.o
+OBJS += platform/libretro/libretro-common/time/rtime.o
+OBJS += platform/libretro/libretro-common/string/stdstring.o
+OBJS += platform/libretro/libretro-common/compat/compat_strcasestr.o
+OBJS += platform/libretro/libretro-common/encodings/encoding_utf.o
+OBJS += platform/libretro/libretro-common/compat/compat_strl.o
+ifeq "$(USE_LIBRETRO_VFS)" "1"
+OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
+OBJS += platform/libretro/libretro-common/compat/fopen_utf8.o
+OBJS += platform/libretro/libretro-common/streams/file_stream.o
+OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
 endif
 endif
 ifeq "$(USE_LIBRETRO_VFS)" "1"
@@ -314,14 +326,26 @@ CHDR_OBJS += $(CHDR)/src/libchdr_chd.o $(CHDR)/src/libchdr_cdrom.o
 CHDR_OBJS += $(CHDR)/src/libchdr_flac.o
 CHDR_OBJS += $(CHDR)/src/libchdr_bitstream.o $(CHDR)/src/libchdr_huffman.o
 
-# lzma - use 19.00 as newer versions have compile problems with libretro platforms
-LZMA = $(CHDR)/deps/lzma-19.00
+LZMA = $(CHDR)/deps/lzma-24.05
 LZMA_OBJS += $(LZMA)/src/CpuArch.o $(LZMA)/src/Alloc.o $(LZMA)/src/LzmaEnc.o
 LZMA_OBJS += $(LZMA)/src/Sort.o $(LZMA)/src/LzmaDec.o $(LZMA)/src/LzFind.o
 LZMA_OBJS += $(LZMA)/src/Delta.o
-$(LZMA_OBJS): CFLAGS += -D_7ZIP_ST
+$(LZMA_OBJS): CFLAGS += -DZ7_ST -Wno-unused
 
-OBJS += $(CHDR_OBJS)
+ZSTD = $(CHDR)/deps/zstd-1.5.6/lib
+ZSTD_OBJS += $(ZSTD)/common/entropy_common.o $(ZSTD)/common/error_private.o
+ZSTD_OBJS += $(ZSTD)/common/fse_decompress.o $(ZSTD)/common/xxhash.o
+ZSTD_OBJS += $(ZSTD)/common/zstd_common.o
+ZSTD_OBJS += $(ZSTD)/decompress/huf_decompress.o
+ifneq (,$(filter x86%, $(ARCH)))
+ZSTD_OBJS += $(ZSTD)/decompress/huf_decompress_amd64.o
+endif
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_ddict.o
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_decompress_block.o
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_decompress.o
+$(ZSTD_OBJS) $(CHDR_OBJS): CFLAGS += -I$(ZSTD) -Wno-unused
+
+OBJS += $(CHDR_OBJS) $(ZSTD_OBJS)
 ifneq ($(STATIC_LINKING), 1)
 OBJS += $(LZMA_OBJS)
 endif
@@ -416,6 +440,10 @@ ifneq (,$(findstring -flto,$(CFLAGS)))
 # to avoid saving and reloading it. However, this collides with the use of LTO.
 pico/32x/memory.o: CFLAGS += -fno-lto
 pico/32x/sh2soc.o: CFLAGS += -fno-lto
+cpu/sh2/compiler.o: CFLAGS += -fno-lto
+endif
+ifneq (,$(filter mips64%, $(ARCH))$(filter %mips32r2, $(CFLAGS)))
+CFLAGS += -DMIPS_USE_SYNCI # mips32r2 clear_cache uses SYNCI instead of a syscall
 endif
 endif
 

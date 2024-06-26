@@ -1,6 +1,6 @@
 /*
  * Basic macros to emit MIPS32/MIPS64 Release 1 or 2 instructions and some utils
- * Copyright (C) 2019 kub
+ * Copyright (C) 2019-2024 kub
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -1671,12 +1671,20 @@ static NOINLINE void host_instructions_updated(void *base, void *end, int force)
 	asm volatile(
 	"	rdhwr	%2, $1;"
 	"	bal	0f;"			// needed to allow for jr.hb:
+#if _MIPS_SZPTR == 64
+	"0:	daddiu	$ra, $ra, 3f-0b;"	//   set ra to insn after jr.hb
+#else
 	"0:	addiu	$ra, $ra, 3f-0b;"	//   set ra to insn after jr.hb
+#endif
 	"	beqz	%2, 3f;"
 
 	"1:	synci	0(%0);"
 	"	sltu	%3, %0, %1;"
+#if _MIPS_SZPTR == 64
+	"	daddu	%0, %0, %2;"
+#else
 	"	addu	%0, %0, %2;"
+#endif
 	"	bnez	%3, 1b;"
 
 	"	sync;"
@@ -1736,7 +1744,7 @@ static NOINLINE void host_instructions_updated(void *base, void *end, int force)
 	EMITH_JMP_START(DCOND_LE);				\
 	/* turns = sr.cycles / cycles */			\
 	emith_asr(t2, sr, 12);					\
-	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)) + 1);	\
+	emith_move_r_imm(t3, (u32)((1ULL<<32) / (cycles)));	\
 	emith_mul_u64(t1, t2, t2, t3); /* multiply by 1/x */	\
 	rcache_free_tmp(t3);					\
 	if (reg >= 0) {						\
@@ -1806,13 +1814,13 @@ static NOINLINE void host_instructions_updated(void *base, void *end, int force)
 	emith_asr(rn, mh, 15);                    \
 	emith_add_r_r_r_lsr(rn, rn, mh, 31); /* sum = (MACH>>31)+(MACH>>15) */ \
 	emith_teq_r_r(rn, Z0); /* (need only N and Z flags) */ \
-	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> ov */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x0000); /* -overflow */ \
-	emith_move_r_imm_c(DCOND_NE, mh, 0x8000); \
-	EMITH_SJMP_START(DCOND_PL); /* sum > 0 -> +ovl */ \
-	emith_sub_r_imm_c(DCOND_MI, ml, 1); /* 0xffffffff */ \
-	emith_sub_r_imm_c(DCOND_MI, mh, 1); /* 0x00007fff */ \
-	EMITH_SJMP_END(DCOND_PL);                 \
+	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> -ovl */ \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x00000000); \
+	emith_move_r_imm_c(DCOND_NE, mh, 0x00008000); \
+	EMITH_SJMP_START(DCOND_MI); /* sum > 0 -> +ovl */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0xffffffff */ \
+	emith_sub_r_imm_c(DCOND_PL, mh, 1); /* 0x00007fff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 } while (0)
@@ -1835,10 +1843,10 @@ static NOINLINE void host_instructions_updated(void *base, void *end, int force)
 	EMITH_SJMP_START(DCOND_EQ); /* sum != 0 -> overflow */ \
 	/* XXX: LSB signalling only in SH1, or in SH2 too? */ \
 	emith_move_r_imm_c(DCOND_NE, mh, 0x00000001); /* LSB of MACH */ \
-	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* negative ovrfl */ \
-	EMITH_SJMP_START(DCOND_PL); /* sum > 0 -> positive ovrfl */ \
-	emith_sub_r_imm_c(DCOND_MI, ml, 1); /* 0x7fffffff */ \
-	EMITH_SJMP_END(DCOND_PL);                 \
+	emith_move_r_imm_c(DCOND_NE, ml, 0x80000000); /* -ovrfl */ \
+	EMITH_SJMP_START(DCOND_MI); /* sum < 0 -> +ovrfl */ \
+	emith_sub_r_imm_c(DCOND_PL, ml, 1); /* 0x7fffffff */ \
+	EMITH_SJMP_END(DCOND_MI);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 	EMITH_SJMP_END(DCOND_EQ);                 \
 } while (0)

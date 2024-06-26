@@ -19,6 +19,10 @@
 #include <libkern/OSCacheControl.h>
 #endif
 
+#include "libretro-common/include/formats/image.h" // really, for IMAGE_PROCESS_NEXT?!?
+#include "libretro-common/include/formats/rpng.h"
+#include "libretro-common/include/file/file_path.h"
+
 #include "libretro-common/include/memmap.h"
 /* Ouf, libretro-common defines  replacement functions, but not the flags :-| */
 #ifndef PROT_READ
@@ -39,6 +43,7 @@
 #include <platform/common/upscale.h>
 #endif
 #include <platform/common/emu.h>
+#include <platform/libpicofe/plat.h> // need this for PXMAKE in readpng :-/
 
 #ifdef _3DS
 #include "3ds/3ds_utils.h"
@@ -154,8 +159,14 @@ static bool retro_audio_buff_underrun      = false;
 static unsigned audio_latency              = 0;
 static bool update_audio_latency           = false;
 static uint16_t pico_events;
+// Sega Pico stuff
 int pico_inp_mode;
 int pico_pen_x = 320/2, pico_pen_y = 240/2;
+static int pico_page;
+static int pico_w, pico_h;
+static char pico_overlay_path[PATH_MAX];
+static unsigned short *pico_overlay;
+
 
 static void retro_audio_buff_status_cb(
       bool active, unsigned occupancy, bool underrun_likely)
@@ -1284,7 +1295,7 @@ static const char *find_bios(int *region, const char *cd_fname)
       f = fopen(path, "rb");
       if (f != NULL) {
          log_cb(RETRO_LOG_INFO, "found MSU rom: %s\n", path);
-	 fclose(f);
+         fclose(f);
          return path;
       }
    }
@@ -1454,9 +1465,11 @@ bool retro_load_game(const struct retro_game_info *info)
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right (green)" },
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "Red Button" },
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "Pen Button" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,"Switch input" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "Previous page" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "Next page" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START, "Pen State" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Pen on Storyware" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Pen on Pad" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "Previous Page" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "Next Page" },
 
       { 0 },
    };
@@ -1596,6 +1609,7 @@ bool retro_load_game(const struct retro_game_info *info)
       break;
    }
 
+   strncpy(pico_overlay_path, content_path, sizeof(pico_overlay_path)-4);
    if (PicoIn.AHW & PAHW_PICO)
       environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc_pico);
    else if (PicoIn.AHW & PAHW_SMS)
@@ -2070,22 +2084,163 @@ void emu_status_msg(const char *format, ...)
     environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &rmsg);
 }
 
+static void draw_pico_ptr(void)
+{
+   int up = (PicoPicohw.pen_pos[0]|PicoPicohw.pen_pos[1]) & 0x8000;
+   int x, y, pitch = vout_width;
+   unsigned short *p = (unsigned short *)((char *)vout_buf + vout_offset);
+   int o = (up ? 0x0000 : 0xffff), _ = (up ? 0xffff : 0x0000);
+   // storyware pages are actually squished, 2:1
+   int h = (pico_inp_mode == 1 ? 160 : vout_height);
+   if (h < 224) y++;
+
+   x = ((pico_pen_x * vout_width * ((1ULL<<32) / 320 + 1)) >> 32);
+   y = ((pico_pen_y * h          * ((1ULL<<32) / 224 + 1)) >> 32);
+   p += x + y * pitch;
+
+   p[-pitch-1] ^= o; p[-pitch] ^= _; p[-pitch+1] ^= _; p[-pitch+2] ^= o;
+   p[-1]       ^= _; p[0]      ^= o; p[1]        ^= o; p[2]        ^= _;
+   p[pitch-1]  ^= _; p[pitch]  ^= o; p[pitch+1]  ^= o; p[pitch+2]  ^= _;
+   p[2*pitch-1]^= o; p[2*pitch]^= _; p[2*pitch+1]^= _; p[2*pitch+2]^= o;
+}
+
+static int readpng(unsigned short *dest, const char *fname, int req_w, int req_h)
+{
+   rpng_t *rpng = rpng_alloc();
+   FILE *pf = fopen(fname, "rb");
+   void *png = NULL, *img = NULL;
+   size_t len;
+   unsigned int x, y, w = req_w, h = req_h;
+   int ret = -1;
+
+   if (!rpng || !pf) {
+      lprintf("can't read png file %s", fname);
+      goto done;
+   }
+ 
+   // who designed this, reading the whole file for inflating, really?
+   fseek(pf, 0, SEEK_END);
+   len = ftell(pf);
+   fseek(pf, 0, SEEK_SET);
+   if (!(png = malloc(len))) {
+      lprintf("oom while reading png file %s", fname);
+      goto done;
+   }
+   fread(png, 1, len, pf);
+
+   // again, who designed this? why all this superfluous iterating here?
+   rpng_set_buf_ptr(rpng, png, len);
+   rpng_start(rpng);
+   while (rpng_iterate_image(rpng));
+   do {
+      ret = rpng_process_image(rpng, &img, len, &w, &h);
+   } while (ret == IMAGE_PROCESS_NEXT);
+
+   // there's already a scaled pngread in libpicofe, but who cares :-/
+   if (img && rpng_is_valid(rpng)) {
+      int x_scale = w*65536 / req_w;
+      int y_scale = h*65536 / req_h;
+      int x_ofs, y_ofs, x_pos, y_pos;
+
+      if (x_scale < y_scale)
+            x_scale = y_scale;
+      else  y_scale = x_scale;
+      x_ofs = req_w - w*65536 / x_scale;
+      y_ofs = req_h - h*65536 / y_scale;
+
+      dest += y_ofs/2*req_w + x_ofs/2;
+      for (y_pos = 0; y_pos < h*65536; y_pos += y_scale+1)
+      {
+         unsigned char *src = (unsigned char *)img + 4*w*(y_pos >> 16);
+         for (x_pos = 0, len = 0; x_pos < w*65536; x_pos += x_scale+1, len++)
+         {
+            // to add insult to injury, rpng writes the image endian dependant!
+            unsigned int d = *(unsigned int *)&src[4*(x_pos >> 16)];
+            int r = d >> 16, g = d >> 8, b = d;
+            *dest++ = PXMAKE(r & 0xff, g & 0xff, b & 0xff);
+         }
+         dest += req_w - len;
+      }
+   }
+   ret = 0;
+
+done:
+   if (img) free(img);
+   if (png) free(png);
+   if (pf) fclose(pf);
+   rpng_free(rpng);
+   return ret;
+}
+
+static unsigned short *load_pico_overlay(int page, int w, int h)
+{
+   static const char *pic_exts[] = { "png", "PNG" };
+   char buffer[PATH_MAX];
+   char *ext, *fname = NULL;
+   int extpos, i;
+
+   if (pico_page == page && pico_w == w && pico_h == h)
+      return pico_overlay;
+   pico_page = page;
+   pico_w = w, pico_h = h;
+
+   ext = strrchr(pico_overlay_path, '.');
+   extpos = ext ? ext-pico_overlay_path : strlen(pico_overlay_path);
+   strcpy(buffer, pico_overlay_path);
+   buffer[extpos++] = '_';
+   if (page < 0) {
+      buffer[extpos++] = 'p';
+      buffer[extpos++] = 'a';
+      buffer[extpos++] = 'd';
+   } else
+      buffer[extpos++] = '0'+PicoPicohw.page;
+   buffer[extpos++] = '.';
+
+   for (i = 0; i < ARRAY_SIZE(pic_exts); i++) {
+      strcpy(buffer+extpos, pic_exts[i]);
+      if (path_is_valid(buffer) == RETRO_VFS_STAT_IS_VALID) {
+         printf("found Pico file: %s\n", buffer);
+         fname = buffer;
+         break;
+      }
+   }
+
+   pico_overlay = realloc(pico_overlay, w*h*2);
+   memset(pico_overlay, 0, w*h*2);
+   if (!fname || !pico_overlay || readpng(pico_overlay, fname, w, h)) {
+      if (pico_overlay)
+         free(pico_overlay);
+      pico_overlay = NULL;
+   }
+
+   return pico_overlay;
+}
+
+void emu_pico_overlay(u16 *pd, int w, int h, int pitch)
+{
+	u16 *overlay = NULL;
+	int y, oh = h;
+
+	// get overlay
+	if (pico_inp_mode == 1) {
+		oh = (w/2 < h ? w/2 : h); // storyware has squished h
+		overlay = load_pico_overlay(PicoPicohw.page, w, oh);
+	} else if (pico_inp_mode == 2)
+		overlay = load_pico_overlay(-1, w, oh);
+
+	// copy overlay onto buffer
+	if (overlay) {
+		for (y = 0; y < oh; y++)
+			memcpy(pd + y*pitch, overlay + y*w, w*2);
+		if (y < h)
+			memset(pd + y*pitch, 0, w*2);
+	}
+}
+
 void run_events_pico(unsigned int events)
 {
     int lim_x;
 
-    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_SELECT)) {
-	pico_inp_mode++;
-	if (pico_inp_mode > 2)
-	    pico_inp_mode = 0;
-	switch (pico_inp_mode) {
-	case 2: emu_status_msg("Input: Pen on Pad"); break;
-	case 1: emu_status_msg("Input: Pen on Storyware"); break;
-	case 0: emu_status_msg("Input: Joystick");
-	    PicoPicohw.pen_pos[0] = PicoPicohw.pen_pos[1] = 0x8000;
-	    break;
-	}
-    }
     if (events & (1 << RETRO_DEVICE_ID_JOYPAD_L)) {
 	PicoPicohw.page--;
 	if (PicoPicohw.page < 0)
@@ -2098,7 +2253,34 @@ void run_events_pico(unsigned int events)
 	    PicoPicohw.page = 6;
 	emu_status_msg("Page %i", PicoPicohw.page);
     }
+    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_X)) {
+        if (pico_inp_mode == 2) {
+            pico_inp_mode = 0;
+            emu_status_msg("Input: D-Pad");
+        } else {
+            pico_inp_mode = 2;
+            emu_status_msg("Input: Pen on Pad");
+        }
+    }
+    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_SELECT)) {
+        if (pico_inp_mode == 1) {
+            pico_inp_mode = 0;
+            emu_status_msg("Input: D-Pad");
+        } else {
+            pico_inp_mode = 1;
+            emu_status_msg("Input: Pen on Storyware");
+        }
+    }
+    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_START)) {
+        PicoPicohw.pen_pos[0] ^= 0x8000;
+        PicoPicohw.pen_pos[1] ^= 0x8000;
+        emu_status_msg("Pen %s", PicoPicohw.pen_pos[0] & 0x8000 ? "Up" : "Down");
+    }
 
+    if ((PicoIn.pad[0] & 0x20) && pico_inp_mode && pico_overlay) {
+        pico_inp_mode = 0;
+        emu_status_msg("Input: D-Pad");
+    }
     if (pico_inp_mode == 0)
 	return;
 
@@ -2109,21 +2291,19 @@ void run_events_pico(unsigned int events)
     if (PicoIn.pad[0] & 8) pico_pen_x++;
     PicoIn.pad[0] &= ~0x0f; // release UDLR
 
-    lim_x = (Pico.video.reg[12]&1) ? 319 : 255;
     if (pico_pen_y < PICO_PEN_ADJUST_Y)
 	pico_pen_y = PICO_PEN_ADJUST_Y;
-    if (pico_pen_y > 224 - PICO_PEN_ADJUST_Y)
-	pico_pen_y = 224 - PICO_PEN_ADJUST_Y;
+    if (pico_pen_y > 223-1 - PICO_PEN_ADJUST_Y)
+	pico_pen_y = 223-1 - PICO_PEN_ADJUST_Y;
     if (pico_pen_x < PICO_PEN_ADJUST_X)
 	pico_pen_x = PICO_PEN_ADJUST_X;
-    if (pico_pen_x > lim_x - PICO_PEN_ADJUST_X)
-	pico_pen_x = lim_x - PICO_PEN_ADJUST_X;
+    if (pico_pen_x > 319-1 - PICO_PEN_ADJUST_X)
+	pico_pen_x = 319-1 - PICO_PEN_ADJUST_X;
 
-    PicoPicohw.pen_pos[0] = pico_pen_x;
-    if (!(Pico.video.reg[12] & 1))
-	PicoPicohw.pen_pos[0] += pico_pen_x / 4;
-    PicoPicohw.pen_pos[0] += 0x3c;
-    PicoPicohw.pen_pos[1] = pico_inp_mode == 1 ? (0x2f8 + pico_pen_y) : (0x1fc + pico_pen_y);
+    PicoPicohw.pen_pos[0] &= 0x8000;
+    PicoPicohw.pen_pos[1] &= 0x8000;
+    PicoPicohw.pen_pos[0] |= 0x3c + pico_pen_x;
+    PicoPicohw.pen_pos[1] |= (pico_inp_mode == 1 ? 0x2f8 : 0x1fc) + pico_pen_y;
 }
 
 void retro_run(void)
@@ -2173,7 +2353,10 @@ void retro_run(void)
 	     PicoIn.pad[pad] |= retro_pico_map[i];
 
    if (PicoIn.AHW == PAHW_PICO) {
-       uint16_t ev = input[0] & ((1 << RETRO_DEVICE_ID_JOYPAD_L) | (1 << RETRO_DEVICE_ID_JOYPAD_R) | (1 << RETRO_DEVICE_ID_JOYPAD_SELECT));
+       uint16_t ev = input[0] &
+             ((1 << RETRO_DEVICE_ID_JOYPAD_L) | (1 << RETRO_DEVICE_ID_JOYPAD_R) |
+              (1 << RETRO_DEVICE_ID_JOYPAD_X) | (1 << RETRO_DEVICE_ID_JOYPAD_SELECT) |
+              (1 << RETRO_DEVICE_ID_JOYPAD_START));
        uint16_t new_ev = ev & ~pico_events;
        pico_events = ev;
        run_events_pico(new_ev);
@@ -2320,6 +2503,16 @@ void retro_run(void)
       }
    }
 
+   if (PicoIn.AHW & PAHW_PICO) {
+      int h = vout_height, w = vout_width;
+      unsigned short *pd = (unsigned short *)((char *)vout_buf + vout_offset);
+
+      if (pico_inp_mode)
+         emu_pico_overlay(pd, w, h, vout_width);
+      if (pico_inp_mode /*== 2 || overlay*/)
+         draw_pico_ptr();
+   }
+
    buff = (char*)vout_buf + vout_offset;
 #endif
 
@@ -2364,7 +2557,7 @@ void retro_init(void)
       | POPT_EN_MCD_PCM|POPT_EN_MCD_CDDA|POPT_EN_MCD_GFX
       | POPT_EN_32X|POPT_EN_PWM
       | POPT_ACC_SPRITES|POPT_DIS_32C_BORDER;
-#ifdef __arm__
+#ifdef DRC_SH2
 #ifdef _3DS
    if (ctr_svchack_successful)
 #endif
@@ -2430,9 +2623,13 @@ void retro_deinit(void)
    free(vout_buf);
 #endif
    vout_buf = NULL;
+
    if (vout_ghosting_buf)
       free(vout_ghosting_buf);
    vout_ghosting_buf = NULL;
+   if (pico_overlay)
+      free(pico_overlay);
+   pico_overlay = NULL;
 
    libretro_supports_bitmasks = false;
 }

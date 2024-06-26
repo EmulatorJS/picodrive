@@ -194,10 +194,14 @@ static void draw_cd_leds(void)
 
 static void draw_pico_ptr(void)
 {
+	int up = (PicoPicohw.pen_pos[0]|PicoPicohw.pen_pos[1]) & 0x8000;
 	int x, y, pitch = 320, offs;
+	// storyware pages are actually squished, 2:1
+	int h = (pico_inp_mode == 1 ? 160 : linecount);
+	if (h < 224) y++;
 
-	x = ((pico_pen_x * colcount * ((1ULL<<32) / 320)) >> 32) + firstcol;
-	y = ((pico_pen_y * linecount * ((1ULL<<32) / 224)) >> 32) + firstline;
+	x = ((pico_pen_x * colcount  * ((1ULL<<32)/320 + 1)) >> 32) + firstcol;
+	y = ((pico_pen_y * h         * ((1ULL<<32)/224 + 1)) >> 32) + firstline;
 
 	if (currentConfig.EmuOpt & EOPT_WIZ_TEAR_FIX) {
 		pitch = 240;
@@ -207,16 +211,20 @@ static void draw_pico_ptr(void)
 
 	if (is_16bit_mode()) {
 		unsigned short *p = (unsigned short *)g_screen_ptr + offs;
+		int o = (up ? 0x0000 : 0xffff), _ = (up ? 0xffff : 0x0000);
 
-					p[0]       ^= 0xffff;
-		p[pitch-1] ^= 0xffff;	p[pitch]   ^= 0xffff;	p[pitch+1] ^= 0xffff;
-					p[pitch*2] ^= 0xffff;
+		p[-pitch-1] ^= o; p[-pitch] ^= _; p[-pitch+1] ^= _; p[-pitch+2] ^= o;
+		p[-1]       ^= _; p[0]      ^= o; p[1]        ^= o; p[2]        ^= _;
+		p[pitch-1]  ^= _; p[pitch]  ^= o; p[pitch+1]  ^= o; p[pitch+2]  ^= _;
+		p[2*pitch-1]^= o; p[2*pitch]^= _; p[2*pitch+1]^= _; p[2*pitch+2]^= o;
 	} else {
 		unsigned char *p = (unsigned char *)g_screen_ptr + offs;
+		int o = (up ? 0xe0 : 0xf0), _ = (up ? 0xf0 : 0xe0);
 
-		p[-1]        = 0xe0;	p[0]       = 0xf0;	p[1]         = 0xe0;
-		p[pitch-1]   = 0xf0;	p[pitch]   = 0xf0;	p[pitch+1]   = 0xf0;
-		p[2*pitch-1] = 0xe0;	p[2*pitch] = 0xf0;	p[2*pitch+1] = 0xe0;
+		p[-pitch-1] = o; p[-pitch] = _; p[-pitch+1] = _; p[-pitch+2] = o;
+		p[-1]       = _; p[0]      = o; p[1]        = o; p[2]        = _;
+		p[pitch-1]  = _; p[pitch]  = o; p[pitch+1]  = o; p[pitch+2]  = _;
+		p[2*pitch-1]= o; p[2*pitch]= _; p[2*pitch+1]= _; p[2*pitch+2]= o;
 	}
 }
 
@@ -431,8 +439,15 @@ void pemu_finalize_frame(const char *fps, const char *notice)
 		osd_text(osd_fps_x, osd_y, fps);
 	if ((PicoIn.AHW & PAHW_MCD) && (emu_opt & EOPT_EN_CD_LEDS))
 		draw_cd_leds();
-	if ((PicoIn.AHW & PAHW_PICO) && (currentConfig.EmuOpt & EOPT_PICO_PEN))
-		if (pico_inp_mode) draw_pico_ptr();
+	if (PicoIn.AHW & PAHW_PICO) {
+		int h = linecount, w = colcount;
+		u16 *pd = g_screen_ptr + firstline*g_screen_ppitch + firstcol;
+
+		if (pico_inp_mode && is_16bit_mode())
+			emu_pico_overlay(pd, w, h, g_screen_ppitch);
+		if (pico_inp_mode /*== 2 || overlay*/)
+			draw_pico_ptr();
+	}
 }
 
 void plat_video_flip(void)
@@ -778,7 +793,7 @@ void pemu_sound_start(void)
 	}
 }
 
-static const int sound_rates[] = { 53000, 44100, 32000, 22050, 16000, 11025, 8000 };
+static const int sound_rates[] = { 52000, 44100, 32000, 22050, 16000, 11025, 8000 };
 
 void pemu_sound_stop(void)
 {

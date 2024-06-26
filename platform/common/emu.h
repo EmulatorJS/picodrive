@@ -107,8 +107,8 @@ extern unsigned char *movie_data;
 extern int reset_timing;
 extern int flip_after_sync;
 
-#define PICO_PEN_ADJUST_X 2
-#define PICO_PEN_ADJUST_Y 2
+#define PICO_PEN_ADJUST_X 1
+#define PICO_PEN_ADJUST_Y 1
 extern int pico_pen_x, pico_pen_y;
 extern int pico_inp_mode;
 
@@ -159,6 +159,8 @@ void  emu_update_input(void);
 void  emu_get_game_name(char *str150);
 void  emu_set_fastforward(int set_on);
 void  emu_status_msg(const char *format, ...);
+
+void  emu_pico_overlay(unsigned short *pd, int w, int h, int pitch);
 
 /* default sound code */
 void  emu_sound_start(void);

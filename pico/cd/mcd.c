@@ -149,7 +149,7 @@ static void pcd_cdc_event(unsigned int now)
     /* reset CDD command wait flag */
     Pico_mcd->s68k_regs[0x4b] = 0xf0;
 
-    if (Pico_mcd->s68k_regs[0x33] & PCDS_IEN4) {
+    if ((Pico_mcd->s68k_regs[0x33] & PCDS_IEN4) && (Pico_mcd->s68k_regs[0x37] & 4)) {
       elprintf(EL_INTS|EL_CD, "s68k: cdd irq 4");
       pcd_irq_s68k(4, 1);
     }
@@ -209,8 +209,7 @@ void pcd_event_schedule(unsigned int now, enum pcd_event event, int after)
 
 void pcd_event_schedule_s68k(enum pcd_event event, int after)
 {
-  if (SekCyclesLeftS68k > after)
-    SekEndRunS68k(after);
+  SekEndRunS68k(after);
 
   pcd_event_schedule(SekCyclesDoneS68k(), event, after);
 }
@@ -313,7 +312,7 @@ static int SekSyncM68k(int once);
 void pcd_run_cpus_normal(int m68k_cycles)
 {
   // TODO this is suspicious. ~1 cycle refresh delay every 256 cycles?
-  SekAimM68k(m68k_cycles, 0x43); // Fhey area
+  SekAimM68k(m68k_cycles, 0x42); // Fhey area
 
   while (CYCLES_GT(Pico.t.m68c_aim, Pico.t.m68c_cnt)) {
     if (SekShouldInterrupt()) {

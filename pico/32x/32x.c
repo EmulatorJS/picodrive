@@ -35,19 +35,22 @@ void p32x_update_irls(SH2 *active_sh2, unsigned int m68k_cycles)
   int irqs, mlvl = 0, slvl = 0;
   int mrun, srun;
 
+  if ((Pico32x.regs[0] & (P32XS_nRES|P32XS_ADEN)) != (P32XS_nRES|P32XS_ADEN))
+    return;
+
   if (active_sh2 != NULL)
     m68k_cycles = sh2_cycles_done_m68k(active_sh2);
 
   // find top bit = highest irq number (0 <= irl <= 14/2) by binary search
 
   // msh2
-  irqs = Pico32x.sh2irqs | Pico32x.sh2irqi[0];
+  irqs = Pico32x.sh2irqi[0];
   if (irqs >= 0x10)     mlvl += 8, irqs >>= 4;
   if (irqs >= 0x04)     mlvl += 4, irqs >>= 2;
   if (irqs >= 0x02)     mlvl += 2, irqs >>= 1;
 
   // ssh2
-  irqs = Pico32x.sh2irqs | Pico32x.sh2irqi[1];
+  irqs = Pico32x.sh2irqi[1];
   if (irqs >= 0x10)     slvl += 8, irqs >>= 4;
   if (irqs >= 0x04)     slvl += 4, irqs >>= 2;
   if (irqs >= 0x02)     slvl += 2, irqs >>= 1;
@@ -74,7 +77,8 @@ void p32x_update_irls(SH2 *active_sh2, unsigned int m68k_cycles)
 // TODO: test on hw..
 void p32x_trigger_irq(SH2 *sh2, unsigned int m68k_cycles, unsigned int mask)
 {
-  Pico32x.sh2irqs |= mask & P32XI_VRES;
+  Pico32x.sh2irqi[0] |= mask & P32XI_VRES;
+  Pico32x.sh2irqi[1] |= mask & P32XI_VRES;
   Pico32x.sh2irqi[0] |= mask & (Pico32x.sh2irq_mask[0] << 3);
   Pico32x.sh2irqi[1] |= mask & (Pico32x.sh2irq_mask[1] << 3);
 
@@ -100,13 +104,21 @@ void Pico32xStartup(void)
 {
   elprintf(EL_STATUS|EL_32X, "32X startup");
 
-  // TODO: OOM handling
   PicoIn.AHW |= PAHW_32X;
-  sh2_init(&msh2, 0, &ssh2);
-  msh2.irq_callback = sh2_irq_cb;
-  sh2_init(&ssh2, 1, &msh2);
-  ssh2.irq_callback = sh2_irq_cb;
+  // TODO: OOM handling
+  if (Pico32xMem == NULL) {
+    Pico32xMem = plat_mmap(0x06000000, sizeof(*Pico32xMem), 0, 0);
+    if (Pico32xMem == NULL) {
+      elprintf(EL_STATUS, "OOM");
+      return;
+    }
+    memset(Pico32xMem, 0, sizeof(struct Pico32xMem));
 
+    sh2_init(&msh2, 0, &ssh2);
+    msh2.irq_callback = sh2_irq_cb;
+    sh2_init(&ssh2, 1, &msh2);
+    ssh2.irq_callback = sh2_irq_cb;
+  }
   PicoMemSetup32x();
   p32x_pwm_ctl_changed();
   p32x_timers_recalc();
@@ -117,6 +129,8 @@ void Pico32xStartup(void)
 
   if (!Pico.m.pal)
     Pico32x.vdp_regs[0] |= P32XV_nPAL;
+  else
+    Pico32x.vdp_regs[0] &= ~P32XV_nPAL;
 
   rendstatus_old = -1;
 
@@ -126,11 +140,7 @@ void Pico32xStartup(void)
 
 void Pico32xShutdown(void)
 {
-  sh2_finish(&msh2);
-  sh2_finish(&ssh2);
-
-  Pico32x.vdp_regs[0] |= P32XS_nRES;
-  Pico32x.vdp_regs[6] |= P32XS_RV;
+  Pico32x.sh2_regs[0] &= ~P32XS2_ADEN;
 
   rendstatus_old = -1;
 
@@ -204,6 +214,7 @@ void PicoPower32x(void)
   memset(&Pico32x, 0, sizeof(Pico32x));
 
   Pico32x.regs[0] = P32XS_REN|P32XS_nRES; // verified
+  Pico32x.regs[0x10/2] = 0xffff;
   Pico32x.vdp_regs[0x0a/2] = P32XV_VBLK|P32XV_PEN;
 }
 
@@ -211,6 +222,9 @@ void PicoUnload32x(void)
 {
   if (PicoIn.AHW & PAHW_32X)
     Pico32xShutdown();
+
+  sh2_finish(&msh2);
+  sh2_finish(&ssh2);
 
   if (Pico32xMem != NULL)
     plat_munmap(Pico32xMem, sizeof(*Pico32xMem));
@@ -225,7 +239,6 @@ void PicoReset32x(void)
     p32x_sh2_poll_event(ssh2.poll_addr, &ssh2, SH2_IDLE_STATES, SekCyclesDone());
     p32x_pwm_ctl_changed();
     p32x_timers_recalc();
-    Pico32x.vdp_regs[0] &= ~P32XV_Mx; // 32X graphics disabled
   }
 }
 
@@ -264,9 +277,8 @@ static void p32x_start_blank(void)
 
   // FB swap waits until vblank
   if ((Pico32x.vdp_regs[0x0a/2] ^ Pico32x.pending_fb) & P32XV_FS) {
-    Pico32x.vdp_regs[0x0a/2] &= ~P32XV_FS;
-    Pico32x.vdp_regs[0x0a/2] |= Pico32x.pending_fb;
-    Pico32xSwapDRAM(Pico32x.pending_fb ^ 1);
+    Pico32x.vdp_regs[0x0a/2] ^= P32XV_FS;
+    Pico32xSwapDRAM(Pico32x.pending_fb ^ P32XV_FS);
   }
 
   p32x_trigger_irq(NULL, Pico.t.m68c_aim, P32XI_VINT);
@@ -571,10 +583,10 @@ void sync_sh2s_lockstep(unsigned int m68k_target)
   unsigned int mcycles;
   
   mcycles = msh2.m68krcycles_done;
-  if (ssh2.m68krcycles_done < mcycles)
+  if (CYCLES_GT(mcycles, ssh2.m68krcycles_done))
     mcycles = ssh2.m68krcycles_done;
 
-  while (mcycles < m68k_target) {
+  while (CYCLES_GT(m68k_target, mcycles)) {
     mcycles += STEP_LS;
     sync_sh2s_normal(mcycles);
   }

@@ -20,6 +20,7 @@
 .equ PDRAW_SHHI_DONE,     (1<<7)
 .equ PDRAW_BORDER_32,     (1<<9)
 .equ PDRAW_32X_SCALE,     (1<<12)
+.equ PDRAW_BGC_DMA,       (1<<14)
 .equ PDRAW_SOFTSCALE,     (1<<15)
 
 @ helpers
@@ -1630,12 +1631,18 @@ PicoDoHighPal555_end:
 .global FinalizeLine555
 
 FinalizeLine555:
+    ldr     r3, [r2, #OFS_EST_rendstatus]
+    mov     r0, r2
+    tst     r3, #PDRAW_BGC_DMA
+    bne     BgcDMA
+
     stmfd   sp!, {r4-r11,lr}
     mov     r11,r2               @ est
-    ldr     r8, [r11, #OFS_EST_Pico]
+    mov     r4, r3
 
     bl      PicoDrawUpdateHighPal
 
+    ldr     r8, [r11, #OFS_EST_Pico]
     add     r3, r11, #OFS_EST_HighPal
 
     mov     lr, #0xff
@@ -1644,7 +1651,6 @@ FinalizeLine555:
     ldr     r5, [r11, #OFS_EST_PicoOpt]
     ldr     r1, [r11, #OFS_EST_HighCol]
     ldr     r0, [r11, #OFS_EST_DrawLineDest]
-    ldr     r4, [r11, #OFS_EST_rendstatus]
     ldr     r7, [r5, #OFS_PicoIn_AHW-OFS_PicoIn_opt]
     ldrb    r12,[r8, #OFS_Pico_video_reg+12]
     ldrb    r6, [r8, #OFS_Pico_video_reg+0]

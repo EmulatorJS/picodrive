@@ -75,8 +75,9 @@ static struct in_default_bind in_evdev_defbinds[] =
 	{ KEY_4,	IN_BINDTYPE_EMU, PEVB_SSLOT_NEXT },
 	{ KEY_5,	IN_BINDTYPE_EMU, PEVB_PICO_PPREV },
 	{ KEY_6,	IN_BINDTYPE_EMU, PEVB_PICO_PNEXT },
-	{ KEY_7,	IN_BINDTYPE_EMU, PEVB_PICO_SWINP },
-	{ KEY_8,	IN_BINDTYPE_EMU, PEVB_PICO_PEN },
+	{ KEY_7,	IN_BINDTYPE_EMU, PEVB_PICO_STORY },
+	{ KEY_8,	IN_BINDTYPE_EMU, PEVB_PICO_PAD },
+	{ KEY_9,	IN_BINDTYPE_EMU, PEVB_PICO_PENST },
 	{ 0, 0, 0 }
 };
 
@@ -138,26 +139,45 @@ static void draw_cd_leds(void)
 
 static void draw_pico_ptr(void)
 {
+	int up = (PicoPicohw.pen_pos[0]|PicoPicohw.pen_pos[1]) & 0x8000;
+	int o = (up ? 0x0000 : 0xffff), _ = (up ? 0xffff : 0x0000);
 	int x = pico_pen_x, y = pico_pen_y, pitch = g_screen_ppitch;
 	unsigned short *p = (unsigned short *)g_screen_ptr;
+	// storyware pages are actually squished, 2:1
+	int h = (pico_inp_mode == 1 ? 160 : saved_line_count);
+	if (h < 224) y++;
 
-	x = (x * saved_col_count * ((1ULL<<32) / 320)) >> 32;
-	y = (y * saved_line_count * ((1ULL<<32) / 224)) >> 32;
+	x = (x * saved_col_count * ((1ULL<<32) / 320 + 1)) >> 32;
+	y = (y * h               * ((1ULL<<32) / 224 + 1)) >> 32;
 	p += (saved_start_col+x) + (saved_start_line+y) * pitch;
 
-				p[-pitch] ^= 0xffff;
-	p[-1] ^= 0xffff;	p[0]      ^= 0xffff;	p[1] ^= 0xffff;
-				p[pitch]  ^= 0xffff;
+	p[-pitch-1] ^= o; p[-pitch] ^= _; p[-pitch+1] ^= _; p[-pitch+2] ^= o;
+	p[-1]       ^= _; p[0]      ^= o; p[1]        ^= o; p[2]        ^= _;
+	p[pitch-1]  ^= _; p[pitch]  ^= o; p[pitch+1]  ^= o; p[pitch+2]  ^= _;
+	p[2*pitch-1]^= o; p[2*pitch]^= _; p[2*pitch+1]^= _; p[2*pitch+2]^= o;
 }
 
 void pemu_finalize_frame(const char *fps, const char *notice)
 {
-	if ((PicoIn.AHW & PAHW_PICO) && (currentConfig.EmuOpt & EOPT_PICO_PEN))
-		if (pico_inp_mode) draw_pico_ptr();
+	if (PicoIn.AHW & PAHW_PICO) {
+		int h = saved_line_count, w = saved_col_count;
+		u16 *pd = g_screen_ptr + saved_start_line*g_screen_ppitch
+					+ saved_start_col;
+
+		if (pico_inp_mode)
+			emu_pico_overlay(pd, w, h, g_screen_ppitch);
+		if (pico_inp_mode /*== 2 || overlay*/)
+			draw_pico_ptr();
+	}
 	if (notice && notice[0])
 		emu_osd_text16(2 + g_osd_start_x, g_osd_y, notice);
-	if (fps && fps[0] && (currentConfig.EmuOpt & EOPT_SHOW_FPS))
-		emu_osd_text16(g_osd_fps_x, g_osd_y, fps);
+	if (fps && fps[0] && (currentConfig.EmuOpt & EOPT_SHOW_FPS)) {
+		const char *p;
+		// avoid wrapping when fps is very high
+		if (fps[5] != ' ' && (p = strchr(fps, '/')))
+			fps = p;
+ 		emu_osd_text16(g_osd_fps_x, g_osd_y, fps);
+	}
 	if ((PicoIn.AHW & PAHW_MCD) && (currentConfig.EmuOpt & EOPT_EN_CD_LEDS))
 		draw_cd_leds();
 }
@@ -171,8 +191,12 @@ void plat_video_flip(void)
 	xenv_update(NULL, NULL, NULL, NULL);
 }
 
+// pnd doesn't use multiple renderers, but we have to handle this since it's
+// called on 32x enable and PicoDrawSetOutFormat() sets up the 32x layers
 void plat_video_toggle_renderer(int change, int is_menu)
 {
+	if (!is_menu)
+		PicoDrawSetOutFormat(PDF_RGB555, 0);
 }
 
 void plat_video_menu_enter(int is_rom_loaded)

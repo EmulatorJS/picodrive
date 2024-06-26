@@ -1,6 +1,7 @@
 /*
  * PicoDrive
  * (C) notaz, 2010,2011
+ * (C) irixxxx, 2023,2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -14,25 +15,19 @@
 #include "input_pico.h"
 #include "version.h"
 
+#include "../libpicofe/plat.h"
+
 #include <pico/pico_int.h>
 #include <pico/patch.h>
 
-#ifdef PANDORA
+#if defined(PANDORA) || defined(__PS2__)
 #define MENU_X2 1
 #else
 #define MENU_X2 0
 #endif
 
-#if defined USE_BGR555
-#define COL_ROM	0x5eff
-#define COL_OTH	0x5ff5
-#elif defined USE_BGR565
-#define COL_ROM	0xfdf7
-#define COL_OTH	0xaff5
-#else
-#define COL_ROM	0xbdff
-#define	COL_OTH	0xaff5
-#endif
+#define COL_ROM PXMAKE(0xbf, 0xbf, 0xff)
+#define COL_OTH PXMAKE(0xaf, 0xff, 0xaf)
 
 // FIXME
 #ifndef REVISION
@@ -65,7 +60,7 @@ static unsigned short fname2color(const char *fname)
 		if (strcasecmp(ext, rom_exts[i]) == 0) return COL_ROM;
 	for (i = 0; i < array_size(other_exts); i++)
 		if (strcasecmp(ext, other_exts[i]) == 0) return COL_OTH;
-	return 0xffff;
+	return PXMAKE(0xff, 0xff, 0xff);
 }
 
 #include <platform/libpicofe/menu.c>
@@ -78,6 +73,8 @@ static int menu_w, menu_h;
 #include <platform/gp2x/menu.c>
 #elif defined(__PSP__)
 #include <platform/psp/menu.c>
+#elif defined(__PS2__)
+#include <platform/ps2/menu.c>
 #elif defined(PANDORA)
 #include <platform/pandora/menu.c>
 #else
@@ -113,7 +110,7 @@ static void make_bg(int no_scale, int from_screen)
 		for (y = 0; y < h; y++, src += pp, d += g_menuscreen_w*2/2) {
 			for (x = 0; x < w; x++) {
 				t = src[x];
-				t = ((t & 0xf79e)>>1) - ((t & 0xc618)>>3);
+				t = (PXMASKH(t,1)>>1) - (PXMASKH(t,3)>>3);
 				t |= t << 16;
 				d[x] = d[x + g_menuscreen_w / 2] = t;
 			}
@@ -232,8 +229,8 @@ static void cdload_progress_cb(const char *fname, int percent)
 	copy_bg(0);
 	menuscreen_memset_lines(dst, 0xff, me_sfont_h - 2);
 
-	smalltext_out16(1, 3 * me_sfont_h, "Processing CD image / MP3s", 0xffff);
-	smalltext_out16(1, 4 * me_sfont_h, fname, 0xffff);
+	smalltext_out16(1, 3 * me_sfont_h, "Processing CD image / MP3s", PXMAKE(0xff, 0xff, 0xff));
+	smalltext_out16(1, 4 * me_sfont_h, fname, PXMAKE(0xff, 0xff, 0xff));
 	dst += g_menuscreen_pp * me_sfont_h * 3;
 
 	if (len > g_menuscreen_w)
@@ -254,8 +251,8 @@ void menu_romload_prepare(const char *rom_name)
 		p--;
 
 	menu_draw_begin(1, 1);
-	smalltext_out16(1, 1, "Loading", 0xffff);
-	smalltext_out16(1, me_sfont_h, p, 0xffff);
+	smalltext_out16(1, 1, "Loading", PXMAKE(0xff, 0xff, 0xff));
+	smalltext_out16(1, me_sfont_h, p, PXMAKE(0xff, 0xff, 0xff));
 	/* copy menu to bg for callbacks. OK since we are not in menu_loop here */
 	copy_bg(1);
 	menu_draw_end();
@@ -273,7 +270,7 @@ void menu_romload_end(void)
 	menu_draw_begin(0, 1);
 	copy_bg(0);
 	smalltext_out16(1, (cdload_called ? 6 : 3) * me_sfont_h,
-		"Starting emulation...", 0xffff);
+		"Starting emulation...", PXMAKE(0xff, 0xff, 0xff));
 	menu_draw_end();
 }
 
@@ -293,12 +290,12 @@ static void draw_patchlist(int sel)
 		if (pos < 0) continue;
 		if (pos >= max_cnt) break;
 		active = PicoPatches[i].active;
-		smalltext_out16(14,                pos * me_sfont_h, active ? "ON " : "OFF", active ? 0xfff6 : 0xffff);
-		smalltext_out16(14 + me_sfont_w*4, pos * me_sfont_h, PicoPatches[i].name,    active ? 0xfff6 : 0xffff);
+		smalltext_out16(14,                pos * me_sfont_h, active ? "ON " : "OFF", PXMAKE(0xff, 0xff, active ? 0xff : 0xb0));
+		smalltext_out16(14 + me_sfont_w*4, pos * me_sfont_h, PicoPatches[i].name,    PXMAKE(0xff, 0xff, active ? 0xff : 0xb0));
 	}
 	pos = start + i;
 	if (pos < max_cnt)
-		smalltext_out16(14, pos * me_sfont_h, "done", 0xffff);
+		smalltext_out16(14, pos * me_sfont_h, "done", PXMAKE(0xff, 0xff, 0xff));
 
 	text_out16(5, max_cnt / 2 * me_sfont_h, ">");
 	menu_draw_end();
@@ -353,20 +350,21 @@ me_bind_action me_ctrl_actions[] =
 
 me_bind_action emuctrl_actions[] =
 {
-	{ "Load State       ", PEV_STATE_LOAD },
-	{ "Save State       ", PEV_STATE_SAVE },
-	{ "Prev Save Slot   ", PEV_SSLOT_PREV },
-	{ "Next Save Slot   ", PEV_SSLOT_NEXT },
-	{ "Switch Renderer  ", PEV_SWITCH_RND },
-	{ "Volume Down      ", PEV_VOL_DOWN },
-	{ "Volume Up        ", PEV_VOL_UP },
-	{ "Fast forward     ", PEV_FF },
-	{ "Reset Game       ", PEV_RESET },
-	{ "Enter Menu       ", PEV_MENU },
-	{ "Pico Next page   ", PEV_PICO_PNEXT },
-	{ "Pico Prev page   ", PEV_PICO_PPREV },
-	{ "Pico Switch input", PEV_PICO_SWINP },
-	{ "Pico Display pen ", PEV_PICO_PEN },
+	{ "Load State     ", PEV_STATE_LOAD },
+	{ "Save State     ", PEV_STATE_SAVE },
+	{ "Prev Save Slot ", PEV_SSLOT_PREV },
+	{ "Next Save Slot ", PEV_SSLOT_NEXT },
+	{ "Switch Renderer", PEV_SWITCH_RND },
+	{ "Volume Down    ", PEV_VOL_DOWN },
+	{ "Volume Up      ", PEV_VOL_UP },
+	{ "Fast forward   ", PEV_FF },
+	{ "Reset Game     ", PEV_RESET },
+	{ "Enter Menu     ", PEV_MENU },
+	{ "Pico Next page ", PEV_PICO_PNEXT },
+	{ "Pico Prev page ", PEV_PICO_PPREV },
+	{ "Pico Storyware ", PEV_PICO_STORY },
+	{ "Pico Pad       ", PEV_PICO_PAD },
+	{ "Pico Pen state ", PEV_PICO_PENST },
 	{ NULL,                0 }
 };
 
@@ -466,15 +464,17 @@ static const char h_fmsound[]  = "Disabling improves performance, but breaks sou
 static const char h_dacnoise[] = "FM chips in the 1st Mega Drive model have DAC noise,\n"
 				"newer models used different chips without this";
 static const char h_fmfilter[] = "Improves sound accuracy but is noticeably slower,\n"
-				"best´quality if native rate isn't working";
+				"best quality if native rate isn't working";
+static const char h_picopen[]  = "Enabling resets Pico display and d-pad input back to\n"
+				"screen if the Pico pen button is pressed";
 
 static menu_entry e_menu_md_options[] =
 {
-	mee_enum_h    ("Renderer",        MA_OPT_RENDERER, currentConfig.renderer, renderer_names, h_renderer),
-	mee_onoff_h   ("FM audio",        MA_OPT2_ENABLE_YM2612, PicoIn.opt, POPT_EN_FM, h_fmsound),
-	mee_onoff_h   ("FM filter",       MA_OPT_FM_FILTER, PicoIn.opt, POPT_EN_FM_FILTER, h_fmfilter),
-	mee_onoff_h   ("FM DAC noise",    MA_OPT2_ENABLE_YM_DAC, PicoIn.opt, POPT_EN_FM_DAC, h_dacnoise),
-	mee_onoff     ("Show Pico pen",   MA_OPT_PICO_PEN, currentConfig.EmuOpt, EOPT_PICO_PEN),
+	mee_enum_h    ("Renderer",                  MA_OPT_RENDERER, currentConfig.renderer, renderer_names, h_renderer),
+	mee_onoff_h   ("FM audio",                  MA_OPT2_ENABLE_YM2612, PicoIn.opt, POPT_EN_FM, h_fmsound),
+	mee_onoff_h   ("FM filter",                 MA_OPT_FM_FILTER, PicoIn.opt, POPT_EN_FM_FILTER, h_fmfilter),
+	mee_onoff_h   ("FM DAC noise",              MA_OPT2_ENABLE_YM_DAC, PicoIn.opt, POPT_EN_FM_DAC, h_dacnoise),
+	mee_onoff_h   ("Pen button shows screen",   MA_OPT_PICO_PEN, currentConfig.EmuOpt, EOPT_PICO_PEN, h_picopen),
 	mee_end,
 };
 
@@ -643,10 +643,12 @@ static int menu_loop_adv_options(int id, int keys)
 
 static int sndrate_prevnext(int rate, int dir)
 {
-	static const int rates[] = { 8000, 11025, 16000, 22050, 44100, 53000 };
-	int rate_count = sizeof(rates)/sizeof(rates[0]);
+	const int *rates = plat_target.sound_rates;
+	int rate_count;
 	int i;
 
+	for (rate_count = 0; rates[rate_count] != -1; rate_count++)
+		;
 	for (i = 0; i < rate_count; i++)
 		if (rates[i] == rate) break;
 
@@ -1009,7 +1011,7 @@ static void draw_text_debug(const char *str, int skip, int from)
 	str = p;
 	for (line = from; line < g_menuscreen_h / me_sfont_h; line++)
 	{
-		smalltext_out16(1, line * me_sfont_h, str, 0xffff);
+		smalltext_out16(1, line * me_sfont_h, str, PXMAKE(0xff, 0xff, 0xff));
 		while (*p && *p != '\n')
 			p++;
 		if (*p == 0)
@@ -1038,8 +1040,8 @@ static void draw_frame_debug(void)
 	pemu_forced_frame(1, 0);
 	make_bg(1, 1);
 
-	smalltext_out16(4, 1, "build: r" REVISION "  "__DATE__ " " __TIME__ " " COMPILER, 0xffff);
-	smalltext_out16(4, g_menuscreen_h - me_sfont_h, layer_str, 0xffff);
+	smalltext_out16(4, 1, "build: r" REVISION "  "__DATE__ " " __TIME__ " " COMPILER, PXMAKE(0xff, 0xff, 0xff));
+	smalltext_out16(4, g_menuscreen_h - me_sfont_h, layer_str, PXMAKE(0xff, 0xff, 0xff));
 }
 
 static void debug_menu_loop(void)
@@ -1063,7 +1065,7 @@ static void debug_menu_loop(void)
 				draw_text_debug(tmp, 0, 0);
 				if (dumped) {
 					smalltext_out16(g_menuscreen_w - 6 * me_sfont_h,
-						g_menuscreen_h - me_mfont_h, "dumped", 0xffff);
+						g_menuscreen_h - me_mfont_h, "dumped", PXMAKE(0xff, 0xff, 0xff));
 					dumped = 0;
 				}
 				break;
@@ -1137,12 +1139,12 @@ static void debug_menu_loop(void)
 
 static void draw_frame_credits(void)
 {
-	smalltext_out16(4, 1, "build: " __DATE__ " " __TIME__, 0xe7fc);
+	smalltext_out16(4, 1, "build: " __DATE__ " " __TIME__, PXMAKE(0xe0, 0xff, 0xe0));
 }
 
 static const char credits[] =
 	"PicoDrive v" VERSION "\n"
-	"(c) notaz, 2006-2013; irixxxx, 2018-2023\n\n"
+	"(c) notaz, 2006-2013; irixxxx, 2018-2024\n\n"
 	"Credits:\n"
 	"fDave: initial code\n"
 #ifdef EMU_C68K
@@ -1296,8 +1298,6 @@ static const char *mgn_picopage(int id, int *offs)
 
 static int mh_picopage(int id, int keys)
 {
-	int ret;
-
 	if (keys & (PBTN_LEFT|PBTN_RIGHT)) { // multi choice
 		PicoPicohw.page += (keys & PBTN_LEFT) ? -1 : 1;
 		if (PicoPicohw.page < 0) PicoPicohw.page = 6;
