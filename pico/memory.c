@@ -565,7 +565,6 @@ void NOINLINE ctl_write_z80reset(u32 d)
         pprof_end_sub(m68k);
       }
       Pico.t.z80_busdelay &= 0xff; // also resets bus request
-      Pico.video.status &= ~PVS_Z80WAIT;
       YM2612ResetChip();
       timers_reset();
     }
@@ -1174,7 +1173,7 @@ static int ym2612_write_local(u32 a, u32 d, int is_from_z80)
 
       // the busy flag in the YM2612 status is actually a 32 cycle timer
       // (89.6 Z80 cycles), triggered by any write to the data port.
-      Pico.t.ym2612_busy = (cycles + 90) << 8; // Q8 for convenience
+      Pico.t.ym2612_busy = (cycles << 8) + YMBUSY_ZCYCLES; // Q8 for convenience
 
       switch (addr)
       {
@@ -1284,9 +1283,11 @@ static u32 ym2612_read_local_68k(void)
 void ym2612_pack_state(void)
 {
   // timers are saved as tick counts, in 16.16 int format
-  int tac, tat = 0, tbc, tbt = 0;
+  int tac, tat = 0, tbc, tbt = 0, busy = 0;
   tac = 1024 - ym2612.OPN.ST.TA;
   tbc = 256  - ym2612.OPN.ST.TB;
+  if (Pico.t.ym2612_busy > 0)
+    busy = cycles_z80_to_68k(Pico.t.ym2612_busy);
   if (Pico.t.timer_a_next_oflow != TIMER_NO_OFLOW)
     tat = (int)((double)(Pico.t.timer_a_step - Pico.t.timer_a_next_oflow)
           / (double)Pico.t.timer_a_step * tac * 65536);
@@ -1301,12 +1302,12 @@ void ym2612_pack_state(void)
     YM2612PicoStateSave2_940(tat, tbt);
   else
 #endif
-    YM2612PicoStateSave2(tat, tbt);
+    YM2612PicoStateSave2(tat, tbt, busy);
 }
 
 void ym2612_unpack_state(void)
 {
-  int i, ret, tac, tat, tbc, tbt;
+  int i, ret, tac, tat, tbc, tbt, busy = 0;
   YM2612PicoStateLoad();
 
   // feed all the registers and update internal state
@@ -1336,12 +1337,13 @@ void ym2612_unpack_state(void)
     ret = YM2612PicoStateLoad2_940(&tat, &tbt);
   else
 #endif
-    ret = YM2612PicoStateLoad2(&tat, &tbt);
+    ret = YM2612PicoStateLoad2(&tat, &tbt, &busy);
   if (ret != 0) {
     elprintf(EL_STATUS, "old ym2612 state");
     return; // no saved timers
   }
 
+  Pico.t.ym2612_busy = cycles_68k_to_z80(busy);
   tac = (1024 - ym2612.OPN.ST.TA) << 16;
   tbc = (256  - ym2612.OPN.ST.TB) << 16;
   if (ym2612.OPN.ST.mode & 1)
@@ -1370,11 +1372,6 @@ void PicoWrite16_32x(u32 a, u32 d) {}
 static void access_68k_bus(int delay) // bus delay as Q8
 {
   // TODO: if the 68K is in DMA wait, Z80 has to wait until DMA ends
-  if (Pico.video.status & (PVS_CPUWR|PVS_CPURD)) {
-    z80_subCLeft(z80_cyclesLeft); // rather rough on both condition and action
-    // TODO the next line will cause audio lag in Overdrive 2 demo?
-    //Pico.video.status |= PVS_Z80WAIT;
-  }
 
   // 68k bus access delay for z80. The fractional part needs to be accumulated
   // until an additional cycle is full. That is then added to the integer part.
@@ -1383,7 +1380,7 @@ static void access_68k_bus(int delay) // bus delay as Q8
   Pico.t.z80_busdelay &= 0xff; // leftover cycle fraction
   // don't use SekCyclesBurn() here since the Z80 doesn't run in cycle lock to
   // the 68K. Count the stolen cycles to be accounted later in the 68k CPU runs
-  Pico.t.z80_buscycles += 8;
+  Pico.t.z80_buscycles += 8; // TODO <=8.4 for Rick 2, but >=8.9 for misc_test
 }
 
 static unsigned char z80_md_vdp_read(unsigned short a)

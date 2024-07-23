@@ -209,6 +209,7 @@ extern struct DrZ80 drZ80;
 
 // 68k clock = OSC/7, z80 clock = OSC/15, 68k:z80 ratio = 7/15 = 3822.9/8192
 #define cycles_68k_to_z80(x) ((x) * 3823 >> 13)
+#define cycles_z80_to_68k(x) ((x) * 8777 >> 12)
 
 // ----------------------- SH2 CPU -----------------------
 
@@ -299,7 +300,6 @@ extern SH2 sh2s[2];
 #define PVS_DMAFILL   (1 << 20) // DMA fill is waiting for fill data
 #define PVS_DMABG     (1 << 21) // background DMA operation is running
 #define PVS_FIFORUN   (1 << 22) // FIFO is processing
-#define PVS_Z80WAIT   (1 << 23) // Z80 blocked by VDP DMA
 
 struct PicoVideo
 {
@@ -898,10 +898,12 @@ void ym2612_unpack_state(void);
 
 #define TIMER_NO_OFLOW 0x70000000
 
-// tA =    72 * (1024 - TA) / M, with M = mclock/2
-#define TIMER_A_TICK_ZCYCLES cycles_68k_to_z80(256LL*   72*2) // Q8
-// tB = 16*72 * ( 256 - TB) / M
-#define TIMER_B_TICK_ZCYCLES cycles_68k_to_z80(256LL*16*72*2) // Q8
+// tA =    24*3 * (1024 - TA) / M, with M = mclock/2
+#define TIMER_A_TICK_ZCYCLES cycles_68k_to_z80(256LL*   24*3*2) // Q8
+// tB = 16*24*3 * ( 256 - TB) / M
+#define TIMER_B_TICK_ZCYCLES cycles_68k_to_z80(256LL*16*24*3*2) // Q8
+// busy =  32*3 / M
+#define YMBUSY_ZCYCLES       cycles_68k_to_z80(256LL*   32*3*2) // Q8
 
 #define timers_cycle(ticks) \
   if (Pico.t.ym2612_busy > 0) \

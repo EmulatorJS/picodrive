@@ -566,7 +566,7 @@ static void DrawLayer(int plane_sh, u32 *hcache, int cellskip, int maxcells,
     ts.nametab+=(ts.line>>4)<<shift[width];
 
     DrawStripInterlace(&ts, plane_sh);
-  } else if( pvid->reg[11]&4) {
+  } else if (pvid->reg[11]&4) {
     // shit, we have 2-cell column based vscroll
     // luckily this doesn't happen too often
     ts.line=ymask|(shift[width]<<24); // save some stuff instead of line
@@ -2125,7 +2125,6 @@ void PicoDrawSync(int to, int off, int on)
   {
     int width2 = (est->Pico->video.reg[12]&1) ? 160 : 128;
 
-    // technically, VDP starts active display output at slot 12
     if (unlikely(on|off) && (off >= width2 ||
           // hack for timing inaccuracy, if on/off near borders
           (off && off <= 24) || (on < width2 && on >= width2-24)))
@@ -2178,7 +2177,7 @@ void PicoDrawBgcDMA(u16 *base, u32 source, u32 mask, int dlen, int sl)
   BgcDMAoffs = 0;
 
   // handle slot offset in 1st line
-  if (sl-12 > 0) // active display output only starts at slot 12
+  if (sl-12 > 0)
     BgcDMAoffs = 2*(sl-12);
   else if (sl < 0) { // DMA starts before active display
     BgcDMAsrc += 2*-sl;

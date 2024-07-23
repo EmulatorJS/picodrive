@@ -23,7 +23,8 @@ enum { clkdiv = 2 };    // CPU clock granularity: one of 1,2,4,8
 // Slot clock is sysclock/20 for h32 and sysclock/16 for h40.
 // One scanline is 63.7us/64.3us (ntsc/pal) long which is ~488.57 68k cycles.
 // Approximate by 488 for VDP.
-// 1 slot is 488/171 = 2.8538 68k cycles in h32, and 488/210 = 2.3238 in h40.
+// 1 slot is 20/7 = 2.857 68k cycles in h32, and 16/7 = 2.286 in h40. That's
+// 171 slots in h32, and ~214 (really 193 plus 17 prolonged in HSYNC) in h40.
 enum { slcpu = 488 };
 
 // VDP has a slot counter running from 0x00 to 0xff every scanline, but it has
@@ -33,6 +34,11 @@ enum { slcpu = 488 };
 // and 0xe4 are only half slots. Ignore 0xe4 here and make 0xb6 a full slot.
 enum { hint32 = 0x85, gapstart32 = 0x94, gapend32 = 0xe9};
 enum { hint40 = 0xa5, gapstart40 = 0xb7, gapend40 = 0xe5};
+
+// Basic timing in h32: 38 slots (~108.5 cycles) from hint to VDP output start
+// at slot 0x00. vint takes place on the 1st VBLANK line in slot 0x01 (~111.5).
+// Rendering takes 128 slots (~365.5), and right border starts at slot 0x80
+// (~474 cycles). hint occurs after 5 slots into the border (~488.5 cycles).
 
 // The horizontal sync period (HBLANK) is 30/37 slots (h32/h40):
 // h32: 4 slots front porch (1.49us), 13 HSYNC (4.84us), 13 back porch (4.84us)
@@ -426,6 +432,8 @@ void PicoVideoFIFOMode(int active, int h40)
 
   if (vf->fifo_maxslot)
     PicoVideoFIFOSync(lc);
+  else
+    lc = 0;
 
   vf->fifo_cyc2sl = vdpcyc2sl[active][h40];
   vf->fifo_sl2cyc = vdpsl2cyc[active][h40];
@@ -534,6 +542,9 @@ static void DmaSlow(int len, u32 source)
 
   SekCyclesBurnRun(PicoVideoFIFOWrite(len, FQ_FGDMA | (pvid->type == 1),
                               PVS_DMABG, SR_DMA | PVS_CPUWR));
+  // short transfers might have been completely conveyed to FIFO, adjust state
+  if ((pvid->status & SR_DMA) && VdpFIFO.fifo_total <= 4)
+    SetFIFOState(&VdpFIFO, pvid);
 
   if ((source & 0xe00000) == 0xe00000) { // Ram
     base = (u16 *)PicoMem.ram;
@@ -615,7 +626,7 @@ static void DmaSlow(int len, u32 source)
         if (sl > VdpFIFO.fifo_hcounts[0]-5) // hint delay is 5 slots
           sl = (s8)sl;
         // TODO this is needed to cover timing inaccuracies
-        if (sl <= 12)  sl = -2;
+        if (sl <= 12) sl = -2;
         PicoDrawBgcDMA(base, source, mask, len, sl);
         // do last DMA cycle since it's all going to the same cram location
         source = source+len-1;
@@ -893,8 +904,8 @@ PICO_INTERNAL_ASM void PicoVideoWrite(u32 a,unsigned short d)
       // the vertical scroll value for this line must be read from VSRAM early,
       // since the A/B tile row to be read depends on it. E.g. Skitchin, OD2
       // in contrast, CRAM writes would have an immediate effect on the current
-      // pixel. XXX think about different offset values for different RAM types
-      PicoVideoSync(InHblank(30));
+      // pixel, so sync can be closer to start of actual image data
+      PicoVideoSync(InHblank(pvid->type == 3 ? 103 : 30)); // cram in Toy Story
 
     if (!(PicoIn.opt&POPT_DIS_VDP_FIFO))
     {
@@ -947,11 +958,13 @@ PICO_INTERNAL_ASM void PicoVideoWrite(u32 a,unsigned short d)
 
         if (num == 1 && ((pvid->reg[1]^d)&0x40)) {
           // handle line blanking before line rendering. Only the last switch
-          // before the 1st sync for other reasons is honoured.
-          PicoVideoSync(1);
-          lineenabled = (d&0x40) ? Pico.m.scanline : -1;
-          linedisabled = (d&0x40) ? -1 : Pico.m.scanline;
-          lineoffset = SekCyclesDone() - Pico.t.m68c_line_start;
+          // before the 1st sync for other reasons is honoured. Switching after
+          // active area is on next line
+          int skip = InHblank(470); // Deadly Moves
+          PicoVideoSync(skip);
+          lineenabled = (d&0x40) ? Pico.m.scanline + !skip: -1;
+          linedisabled = (d&0x40) ? -1 : Pico.m.scanline + !skip;
+          lineoffset = (skip ? SekCyclesDone() - Pico.t.m68c_line_start : 0);
         } else if (((1<<num) & 0x738ff) && pvid->reg[num] != d)
           // VDP regs 0-7,11-13,16-18 influence rendering, ignore all others
           PicoVideoSync(InHblank(93)); // Toy Story
@@ -1243,10 +1256,11 @@ void PicoVideoLoad(void)
   vf->fifo_ql = vf->fifo_qx = vf->fifo_total = 0;
   if (pv->fifo_cnt) {
     int wc = pv->fifo_cnt;
-    pv->status |= PVS_CPUWR;
     vf->fifo_total = (wc+b) >> b;
     vf->fifo_queue[vf->fifo_qx + vf->fifo_ql] = (wc << 3) | b | FQ_FGDMA;
     vf->fifo_ql ++;
+    if (vf->fifo_total > 4 && !(pv->status & (PVS_CPUWR|PVS_CPURD)))
+      pv->status |= PVS_CPUWR;
   }
   if (pv->fifo_bgcnt) {
     int wc = pv->fifo_bgcnt;
@@ -1255,8 +1269,7 @@ void PicoVideoLoad(void)
     vf->fifo_queue[vf->fifo_qx + vf->fifo_ql] = (wc << 3)     | FQ_BGDMA;
     vf->fifo_ql ++;
   }
-  if (vf->fifo_ql)
-    pv->status |= SR_DMA;
   PicoVideoCacheSAT(1);
+  vf->fifo_maxslot = 0;
 }
 // vim:shiftwidth=2:ts=2:expandtab
