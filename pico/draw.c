@@ -2,7 +2,7 @@
  * line renderer
  * (c) Copyright Dave, 2004
  * (C) notaz, 2006-2010
- * (C) kub, 2019-2020
+ * (C) irixxxx, 2019-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -85,6 +85,8 @@ u32 VdpSATCache[2*128];  // VDP sprite cache (1st 32 sprite attr bits)
 #define LF_PLANE   (1 << 0) // must be = 1
 #define LF_SH      (1 << 1) // must be = 2
 //#define LF_FORCE   (1 << 2)
+#define LF_LINE    (1 << 3) // layer covers line
+#define LF_LPRIO   (1 << 8) // line has low prio tiles
 
 #define LF_PLANE_A 0
 #define LF_PLANE_B 1
@@ -282,7 +284,6 @@ TileFlipMakerAS(TileFlipAS_onlymark, pix_sh_as_onlymark)
 // NB s/h already resolved by non-forced drawing
 // forced both layer draw (through debug reg)
 #define pix_and(x) \
-  pal |= 0xc0; /* leave s/h bits untouched in pixel "and" */ \
   pd[x] &= pal|t
 
 TileNormMaker(TileNorm_and, pix_and)
@@ -290,7 +291,6 @@ TileFlipMaker(TileFlip_and, pix_and)
 
 // forced sprite draw (through debug reg)
 #define pix_sh_as_and(x) \
-  pal |= 0xc0; /* leave s/h bits untouched in pixel "and" */ \
   if (likely(m & (1<<(x+8)))) { \
     m &= ~(1<<(x+8)); \
     /* if (!t) pd[x] |= 0x40; as per titan hw notes? */ \
@@ -303,289 +303,292 @@ TileFlipMakerAS(TileFlipSH_AS_and, pix_sh_as_and)
 
 // --------------------------------------------
 
-#ifndef _ASM_DRAW_C
-static void DrawStrip(struct TileStrip *ts, int lflags, int cellskip)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  u32 *hc = ts->hc;
-  int tilex, dx, ty, cells;
-  u32 pack = 0, oldcode = -1, blank = -1; // The tile we know is blank
-  unsigned int pal = 0, sh;
-
-  // Draw tiles across screen:
-  sh = (lflags & LF_SH) << 6; // shadow
-  tilex=((-ts->hscroll)>>3)+cellskip;
-  ty=(ts->line&7)<<1; // Y-Offset into tile
-  dx=((ts->hscroll-1)&7)+1;
-  cells = ts->cells - cellskip;
-  if(dx != 8) cells++; // have hscroll, need to draw 1 cell more
-  dx+=cellskip<<3;
-
-//  int force = (lflags&LF_FORCE) << 13;
-  for (; cells > 0; dx+=8, tilex++, cells--)
-  {
-    u32 code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];
-//    code &= ~force; // forced always draw everything
-
-    if (code == blank && !((code & 0x8000) && sh))
-      continue;
-
-    if (code!=oldcode) {
-      oldcode = code;
-
-      pack = 0;
-      if (code != blank) {
-        // Get tile address/2:
-        u32 addr = ((code&0x7ff)<<4) + ty;
-        if (code & 0x1000) addr ^= 0xe; // Y-flip
-
-        pal = ((code>>9)&0x30) | sh; // shadow
-
-        pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-        if (!pack)
-          blank = code;
-      }
-    }
-
-    if (code & 0x8000) { // (un-forced) high priority tile
-      code |= (dx<<16) | (ty<<25);
-      if (code & 0x1000) code ^= 0xe<<25;
-      *hc++ = code, *hc++ = pack; // cache it
-    } else if (code != blank) {
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
-    }
-  }
-
-  // terminate the cache list
-  *hc = 0;
-
-  // if oldcode wasn't changed, it means all layer is hi priority
-  if (oldcode == -1) Pico.est.rendstatus |= PDRAW_PLANE_HI_PRIO;
+#define DrawTile(mask,yshift,ymask,hpcode,cache) {			\
+  if (code!=oldcode) {							\
+    oldcode = code;							\
+									\
+    pack = 0;								\
+    if (code != blank) {						\
+      /* Get tile address/2: */						\
+      u32 addr = ((code<<yshift)&0x7ff0) + ty;				\
+      if (code & 0x1000) addr ^= ymask<<1; /* Y-flip */			\
+									\
+      pal = ((code>>9)&0x30) | sh; /* shadow */				\
+      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));			\
+      if (!pack)							\
+        blank = code;							\
+    }									\
+  }									\
+  if (cache && (code & 0x8000)) { /* (un-forced) high priority tile */	\
+    if (sh | (pack&mask)) {						\
+      code = hpcode | (dx<<16);						\
+      if (code & 0x1000) code ^= ymask<<(26+1); /* Y-flip */		\
+      *hc++ = code; *hc++ = pack&mask; /* cache it */			\
+    }									\
+  } else {								\
+    if (cache) lflags |= LF_LPRIO;					\
+    if (pack&mask) {							\
+      if (code & 0x0800) TileFlip(pd + dx, pack&mask, pal);		\
+      else               TileNorm(pd + dx, pack&mask, pal);		\
+    }									\
+  }									\
 }
 
-// this is messy
-static void DrawStripVSRam(struct TileStrip *ts, int plane_sh, int cellskip)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  u32 *hc = ts->hc;
-  int tilex, dx, ty = 0, addr = 0, cell = 0, nametabadd = 0;
-  u32 oldcode = -1, blank = -1; // The tile we know is blank
-  unsigned int pal = 0, scan = Pico.est.DrawScanline, sh, plane;
-
-  // Draw tiles across screen:
-  sh = (plane_sh & LF_SH) << 6; // shadow
-  plane = (plane_sh & LF_PLANE); // plane to draw
-  tilex=(-ts->hscroll)>>3;
-  dx=((ts->hscroll-1)&7)+1;
-  if (ts->hscroll & 0x0f) {
-    int adj = ((ts->hscroll ^ dx) >> 3) & 1;
-    cell -= adj + 1;
-    ts->cells -= adj;
-    PicoMem.vsram[0x3e] = PicoMem.vsram[0x3f] = plane_sh >> 16;
-  }
-  cell+=cellskip;
-  tilex+=cellskip;
-  dx+=cellskip<<3;
-
-//  int force = (plane_sh&LF_FORCE) << 13;
-  if ((cell&1)==1)
-  {
-    int line,vscroll;
-    vscroll = PicoMem.vsram[plane + (cell&0x3e)];
-
-    // Find the line in the name table
-    line=(vscroll+scan)&ts->line&0xffff; // ts->line is really ymask ..
-    nametabadd=(line>>3)<<(ts->line>>24);    // .. and shift[width]
-    ty=(line&7)<<1; // Y-Offset into tile
-  }
-  for (; cell < ts->cells; dx+=8,tilex++,cell++)
-  {
-    u32 code, pack;
-
-    if ((cell&1)==0)
-    {
-      int line,vscroll;
-      vscroll = PicoMem.vsram[plane + (cell&0x3e)];
-
-      // Find the line in the name table
-      line=(vscroll+scan)&ts->line&0xffff; // ts->line is really ymask ..
-      nametabadd=(line>>3)<<(ts->line>>24);    // .. and shift[width]
-      ty=(line&7)<<1; // Y-Offset into tile
-    }
-
-    code= PicoMem.vram[ts->nametab + nametabadd + (tilex & ts->xmask)];
-//    code &= ~force; // forced always draw everything
-    code |= ty<<25; // add ty since that can change pixel row for every 2nd tile
-
-    if (code == blank && !((code & 0x8000) && sh))
-      continue;
-
-    if (code!=oldcode) {
-      oldcode = code;
-      // Get tile address/2:
-      addr = (code&0x7ff)<<4;
-
-      pal = ((code>>9)&0x30) | sh; // shadow
-    }
-
-    pack = (code & 0x1000 ? ty^0xe : ty); // Y-flip
-    pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr+pack));
-    if (!pack)
-      blank = code;
-
-    if (code & 0x8000) { // (un-forced) high priority tile
-      code |= (dx<<16);
-      if (code & 0x1000) code ^= 0xe<<25;
-      *hc++ = code, *hc++ = pack; // cache it
-    } else if (code != blank) {
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
-    }
-  }
-
-  // terminate the cache list
-  *hc = 0;
-
-  if (oldcode == -1) Pico.est.rendstatus |= PDRAW_PLANE_HI_PRIO;
+#define DrawStripMaker(funcname,yshift,ymask,hpcode,drawtile,cache)	\
+void funcname(struct TileStrip *ts, int lflags, int cellskip)		\
+{									\
+  unsigned char *pd = Pico.est.HighCol;					\
+  u32 *hc = ts->hc;							\
+  int tilex, dx, ty, cells;						\
+  u32 code, oldcode = -1, blank = -1; /* The tile we know is blank */	\
+  u32 pal = 0, pack = 0, sh, mask = ~0;					\
+									\
+  /* Draw tiles across screen: */					\
+  sh = (lflags & LF_SH) << 6; /* shadow */				\
+  tilex=((-ts->hscroll)>>3)+cellskip;					\
+  ty=(ts->line&ymask)<<1; /* Y-Offset into tile */			\
+  dx=((ts->hscroll-1)&7)+1;						\
+  cells = ts->cells - cellskip;						\
+  dx+=cellskip<<3;							\
+									\
+/*  int force = (plane_sh&LF_FORCE) << 13; */				\
+  if (dx & 7) {								\
+    code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];		\
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    mask = 0xffffffff<<((dx&7)*4);					\
+    if (code & 0x0800) mask = 0xffffffff>>((dx&7)*4);			\
+    mask = (~mask << 16) | (~mask >> 16);				\
+									\
+    drawtile(mask,yshift,ymask,hpcode | (ty<<26) | (1<<25),cache);	\
+    dx += 8, tilex++, cells--;						\
+  }									\
+									\
+  for (; cells > 0; dx+=8, tilex++, cells--)				\
+  {									\
+    code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];		\
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    if (code != blank || ((code & 0x8000) && sh))			\
+      drawtile(~0,yshift,ymask,hpcode | (ty<<26),cache);		\
+  }									\
+									\
+  if (dx & 7) {								\
+    code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];		\
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    if (code != blank || ((code & 0x8000) && sh)) {			\
+      mask = 0xffffffff<<((dx&7)*4);					\
+      if (code & 0x0800) mask = 0xffffffff>>((dx&7)*4);			\
+      mask = (mask << 16) | (mask >> 16);				\
+									\
+      drawtile(mask,yshift,ymask,hpcode | (ty<<26) | (1<<25),cache);	\
+    }									\
+  }									\
+									\
+  /* terminate the cache list */					\
+  if (cache) *hc = 0;							\
+									\
+  /* if oldcode wasn't changed, it means all layer is hi priority */	\
+  if (cache && (lflags & (LF_LINE|LF_LPRIO)) == LF_LINE) Pico.est.rendstatus |= PDRAW_PLANE_HI_PRIO; \
 }
-#endif
 
 #ifndef _ASM_DRAW_C
+static DrawStripMaker(DrawStrip, 4, 0x7, code, DrawTile, 1);
+
 static
 #endif
-void DrawStripInterlace(struct TileStrip *ts, int plane_sh)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  u32 *hc = ts->hc;
-  int tilex = 0, dx = 0, ty = 0, cells;
-  u32 oldcode = -1, blank = -1; // The tile we know is blank
-  unsigned int pal = 0, pack = 0, sh;
+       DrawStripMaker(DrawStripInterlace, 5, 0xf, (code&0xfc00) | ((code&0x3ff)<<1), DrawTile, 1);
 
-  // Draw tiles across screen:
-  sh = (plane_sh & LF_SH) << 6; // shadow
-  tilex=(-ts->hscroll)>>3;
-  ty=(ts->line&15)<<1; // Y-Offset into tile
-  dx=((ts->hscroll-1)&7)+1;
-  cells = ts->cells;
-  if(dx != 8) cells++; // have hscroll, need to draw 1 cell more
-
-//  int force = (plane_sh&LF_FORCE) << 13;
-  for (; cells; dx+=8,tilex++,cells--)
-  {
-    u32 code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];
-//    code &= ~force; // forced always draw everything
-
-    if (code == blank && !(code & 0x8000))
-      continue;
-
-    if (code!=oldcode) {
-      oldcode = code;
-
-      pack = 0;
-      if (code != blank) {
-        // Get tile address/2:
-        u32 addr = ((code&0x3ff)<<5) + ty;
-        if (code & 0x1000) addr ^= 0x1e; // Y-flip
-
-        pal = ((code>>9)&0x30) | sh; // shadow
-
-        pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-        if (!pack)
-          blank = code;
-      }
-    }
-
-    if (code & 0x8000) { // high priority tile
-      if ((plane_sh&LF_SH) | (code!=blank)) {
-        code = (code&0xfc00) | ((code&0x3ff)<<1) | (dx<<16) | (ty<<25);
-        if (code & 0x1000) code ^= 0x1e<<25;
-        *hc++ = code, *hc++ = pack; // cache it
-      }
-      continue;
-    } else if (code != blank) {
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
-    }
-  }
-
-  // terminate the cache list
-  *hc = 0;
+// this is messy
+#define DrawStripVSRamMaker(funcname,yshift,ymask,hpcode,drawtile,cache) \
+void funcname(struct TileStrip *ts, int lflags, int cellskip)		\
+{									\
+  unsigned char *pd = Pico.est.HighCol;					\
+  u32 *hc = ts->hc;							\
+  int tilex, dx, ty = 0, cell = 0, nametabadd = 0;			\
+  u32 code, oldcode = -1, blank = -1; /* The tile we know is blank */	\
+  u32 pal = 0, pack = 0, sh, plane, mask;				\
+  int scan = Pico.est.DrawScanline<<(yshift-4);				\
+									\
+  /* Draw tiles across screen: */					\
+  sh = (lflags & LF_SH) << 6; /* shadow */				\
+  plane = (lflags & LF_PLANE); /* plane to draw */			\
+  tilex=(-ts->hscroll)>>3;						\
+  dx=((ts->hscroll-1)&7)+1;						\
+  if (ts->hscroll & 0x0f) {						\
+    int adj = ((ts->hscroll ^ dx) >> 3) & 1;				\
+    cell -= adj + 1;							\
+    ts->cells -= adj;							\
+    PicoMem.vsram[0x3e] = PicoMem.vsram[0x3f] = lflags >> 16;		\
+  }									\
+  cell+=cellskip;							\
+  tilex+=cellskip;							\
+  dx+=cellskip<<3;							\
+									\
+/*  int force = (lflags&LF_FORCE) << 13; */				\
+  if ((cell&1)==1 || (dx&7)) {						\
+    int line,vscroll;							\
+    vscroll = PicoMem.vsram[plane + (cell&0x3e)];			\
+									\
+    /* Find the line in the name table */				\
+    line=(vscroll+scan)&(u16)ts->line;    /* ts->line is really ymask, */ \
+    nametabadd=(line>>(yshift-1))<<(ts->line>>24); /* and shift[width] */ \
+    ty=((line<<(yshift-4))&ymask)<<1; /* Y-Offset into tile */		\
+  }									\
+  if (dx & 7) {								\
+    code = PicoMem.vram[ts->nametab + nametabadd + (tilex & ts->xmask)]; \
+    code |= ty<<26; /* add ty since that can change pixel row for every 2nd tile */ \
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    mask = 0xffffffff<<((dx&7)*4);					\
+    if (code & 0x0800) mask = 0xffffffff>>((dx&7)*4);			\
+    mask = (~mask << 16) | (~mask >> 16);				\
+									\
+    drawtile(mask,yshift,ymask,hpcode | (1<<25),cache);			\
+									\
+    dx += 8, tilex++, cell++;						\
+  }									\
+  for (; cell < ts->cells; dx+=8,tilex++,cell++)			\
+  {									\
+    if ((cell&1)==0)							\
+    {									\
+      int line,vscroll;							\
+      vscroll = PicoMem.vsram[plane + (cell&0x3e)];			\
+									\
+      /* Find the line in the name table */				\
+      line=(vscroll+scan)&(u16)ts->line;    /* ts->line is really ymask, */ \
+      nametabadd=(line>>(yshift-1))<<(ts->line>>24); /* and shift[width] */ \
+      ty=((line<<(yshift-4))&ymask)<<1; /* Y-Offset into tile */	\
+    }									\
+									\
+    code = PicoMem.vram[ts->nametab + nametabadd + (tilex & ts->xmask)]; \
+    code |= ty<<26; /* add ty since that can change pixel row for every 2nd tile */ \
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    if (code != blank || ((code & 0x8000) && sh))			\
+      drawtile(~0,yshift,ymask,hpcode,cache);				\
+  }									\
+  if (dx & 7) {								\
+    if ((cell&1)==0)							\
+    {									\
+      int line,vscroll;							\
+      vscroll = PicoMem.vsram[plane + (cell&0x3e)];			\
+									\
+      /* Find the line in the name table */				\
+      line=(vscroll+scan)&(u16)ts->line;    /* ts->line is really ymask, */ \
+      nametabadd=(line>>(yshift-1))<<(ts->line>>24); /* and shift[width] */ \
+      ty=((line<<(yshift-4))&ymask)<<1; /* Y-Offset into tile */	\
+    }									\
+									\
+    code = PicoMem.vram[ts->nametab + nametabadd + (tilex & ts->xmask)]; \
+    code |= ty<<26; /* add ty since that can change pixel row for every 2nd tile */ \
+/*    code &= ~force; *//* forced always draw everything */		\
+									\
+    if (code != blank || ((code & 0x8000) && sh)) {			\
+      mask = 0xffffffff<<((dx&7)*4);					\
+      if (code & 0x0800) mask = 0xffffffff>>((dx&7)*4);			\
+      mask = (mask << 16) | (mask >> 16);				\
+									\
+      drawtile(mask,yshift,ymask,hpcode | (1<<25),cache);		\
+    }									\
+  }									\
+									\
+  /* terminate the cache list */					\
+  if (cache) *hc = 0;							\
+									\
+  if (cache && (lflags & (LF_LINE|LF_LPRIO)) == LF_LINE) Pico.est.rendstatus |= PDRAW_PLANE_HI_PRIO; \
 }
+
+#ifndef _ASM_DRAW_C
+static DrawStripVSRamMaker(DrawStripVSRam, 4, 0x7, code, DrawTile, 1);
+
+static
+#endif
+       DrawStripVSRamMaker(DrawStripVSRamInterlace, 5, 0xf, (code&0xfc00) | ((code&0x3ff)<<1), DrawTile, 1);
 
 // --------------------------------------------
 
-#ifndef _ASM_DRAW_C
-static void DrawLayer(int plane_sh, u32 *hcache, int cellskip, int maxcells,
-  struct PicoEState *est)
-{
-  struct PicoVideo *pvid=&est->Pico->video;
-  const char shift[4]={5,6,5,7}; // 32,64 or 128 sized tilemaps (2 is invalid)
-  struct TileStrip ts;
-  int width, height, ymask;
-  int vscroll, htab;
-
-  ts.hc=hcache;
-  ts.cells=maxcells;
-
-  // Work out the TileStrip to draw
-
-  // Work out the name table size: 32 64 or 128 tiles (0-3)
-  width=pvid->reg[16];
-  height=(width>>4)&3; width&=3;
-
-  ts.xmask=(1<<shift[width])-1; // X Mask in tiles (0x1f-0x7f)
-  ymask=(height<<8)|0xff;       // Y Mask in pixels
-  switch (width) {
-    case 1: ymask &= 0x1ff; break;
-    case 2: ymask =  0x007; break;
-    case 3: ymask =  0x0ff; break;
-  }
-
-  // Find name table:
-  if (plane_sh&LF_PLANE) ts.nametab=(pvid->reg[4]&0x07)<<12; // B
-  else                   ts.nametab=(pvid->reg[2]&0x38)<< 9; // A
-
-  htab=pvid->reg[13]<<9; // Horizontal scroll table address
-  switch (pvid->reg[11]&3) {
-    case 1: htab += (est->DrawScanline<<1) &  0x0f; break;
-    case 2: htab += (est->DrawScanline<<1) & ~0x0f; break; // Offset by tile
-    case 3: htab += (est->DrawScanline<<1);         break; // Offset by line
-  }
-  htab+=plane_sh&LF_PLANE; // A or B
-
-  // Get horizontal scroll value, will be masked later
-  ts.hscroll = PicoMem.vram[htab & 0x7fff];
-
-  if((pvid->reg[12]&6) == 6) {
-    // interlace mode 2
-    vscroll = PicoMem.vsram[plane_sh&LF_PLANE]; // Get vertical scroll value
-
-    // Find the line in the name table
-    ts.line=(vscroll+(est->DrawScanline<<1))&((ymask<<1)|1);
-    ts.nametab+=(ts.line>>4)<<shift[width];
-
-    DrawStripInterlace(&ts, plane_sh);
-  } else if (pvid->reg[11]&4) {
-    // shit, we have 2-cell column based vscroll
-    // luckily this doesn't happen too often
-    ts.line=ymask|(shift[width]<<24); // save some stuff instead of line
-    // vscroll value for leftmost cells in case of hscroll not on 16px boundary
-    // XXX it's unclear what exactly the hw is doing. Continue reading where it
-    // stopped last seems to work best (H40: 0x50 (wrap->0x00), H32 0x40).
-    plane_sh |= PicoMem.vsram[(pvid->reg[12]&1?0x00:0x20) + (plane_sh&LF_PLANE)] << 16;
-    DrawStripVSRam(&ts, plane_sh, cellskip);
-  } else {
-    vscroll = PicoMem.vsram[plane_sh&LF_PLANE]; // Get vertical scroll value
-
-    // Find the line in the name table
-    ts.line=(vscroll+est->DrawScanline)&ymask;
-    ts.nametab+=(ts.line>>3)<<shift[width];
-
-    DrawStrip(&ts, plane_sh, cellskip);
-  }
+#define DrawLayerMaker(funcname,drawstrip,drawstripinterlace,drawstripvsram,drawstripvsraminterlace) \
+void funcname(int plane_sh, u32 *hcache, int cellskip, int maxcells, struct PicoEState *est) \
+{									\
+  struct PicoVideo *pvid=&est->Pico->video;				\
+  const char shift[4]={5,6,5,7}; /* 32,64 or 128 sized tilemaps (2 is invalid) */ \
+  struct TileStrip ts;							\
+  int width, height, ymask;						\
+  int vscroll, htab;							\
+									\
+  ts.hc=hcache;								\
+  ts.cells=maxcells;							\
+									\
+  /* Work out the TileStrip to draw */					\
+									\
+  /* Work out the name table size: 32 64 or 128 tiles (0-3) */		\
+  width=pvid->reg[16];							\
+  height=(width>>4)&3; width&=3;					\
+									\
+  ts.xmask=(1<<shift[width])-1; /* X Mask in tiles (0x1f-0x7f) */	\
+  ymask=(height<<8)|0xff;       /* Y Mask in pixels */			\
+  switch (width) {							\
+    case 1: ymask &= 0x1ff; break;					\
+    case 2: ymask =  0x007; break;					\
+    case 3: ymask =  0x0ff; break;					\
+  }									\
+									\
+  /* Find name table: */						\
+  if (plane_sh&LF_PLANE) ts.nametab=(pvid->reg[4]&0x07)<<12; /* B */	\
+  else                   ts.nametab=(pvid->reg[2]&0x38)<< 9; /* A */	\
+									\
+  htab=pvid->reg[13]<<9; /* Horizontal scroll table address */		\
+  switch (pvid->reg[11]&3) {						\
+    case 1: htab += (est->DrawScanline<<1) &  0x0f; break;		\
+    case 2: htab += (est->DrawScanline<<1) & ~0x0f; break; /* Offset by tile */ \
+    case 3: htab += (est->DrawScanline<<1);         break; /* Offset by line */ \
+  }									\
+  htab+=plane_sh&LF_PLANE; /* A or B */					\
+									\
+  /* Get horizontal scroll value, will be masked later */		\
+  ts.hscroll = PicoMem.vram[htab & 0x7fff];				\
+									\
+  if (likely(!(pvid->reg[11]&4))) {					\
+    vscroll = PicoMem.vsram[plane_sh&LF_PLANE]; /* Get vertical scroll value */ \
+									\
+    if(likely((pvid->reg[12]&6) != 6)) {				\
+      /* Find the line in the name table */				\
+      ts.line=(vscroll+est->DrawScanline)&ymask;			\
+      ts.nametab+=(ts.line>>3)<<shift[width];				\
+									\
+      drawstrip(&ts, plane_sh, cellskip);				\
+    } else {								\
+      /* interlace mode 2 */						\
+									\
+      /* Find the line in the name table */				\
+      ts.line=(vscroll+(est->DrawScanline<<1))&((ymask<<1)|1);		\
+      ts.nametab+=(ts.line>>4)<<shift[width];				\
+									\
+      drawstripinterlace(&ts, plane_sh, cellskip);			\
+    }									\
+  } else {								\
+    /* shit, we have 2-cell column based vscroll */			\
+    /* luckily this doesn't happen too often */				\
+									\
+    /* vscroll value for leftmost cells in case of hscroll not on 16px boundary */ \
+    /* NB it's unclear what exactly the hw is doing. Continue reading where it */ \
+    /* stopped last seems to work best (H40: 0x50 (wrap->0x00), H32 0x40). */ \
+    plane_sh |= PicoMem.vsram[(pvid->reg[12]&1?0x00:0x20) + (plane_sh&LF_PLANE)] << 16; \
+									\
+    if (likely((pvid->reg[12]&6) != 6)) {				\
+      ts.line=ymask|(shift[width]<<24); /* save some stuff instead of line */ \
+      drawstripvsram(&ts, plane_sh, cellskip);				\
+    } else {								\
+      ts.line=(ymask<<1)|1|(shift[width]<<24); /* save some stuff instead of line */ \
+      drawstripvsraminterlace(&ts, plane_sh, cellskip);			\
+    }									\
+  }									\
 }
 
+#ifndef _ASM_DRAW_C
+static DrawLayerMaker(DrawLayer,DrawStrip,DrawStripInterlace,DrawStripVSRam,DrawStripVSRamInterlace);
 
 // --------------------------------------------
 
@@ -595,39 +598,42 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
 {
   unsigned char *pd = est->HighCol;
   struct PicoVideo *pvid = &est->Pico->video;
-  int tilex,ty,nametab,code=0;
-  int blank=-1; // The tile we know is blank
+  int tilex,ty,nametab,code,oldcode=-1,blank=-1; // The tile we know is blank
+  int yshift,ymask;
+  u32 pack;
+  u32 *hc=NULL, lflags=0; // referenced in DrawTile
+
+  yshift = 4, ymask = 0x7;
+  if(likely((pvid->reg[12]&6) == 6))
+    yshift = 5, ymask = 0xf;
+  ty=((est->DrawScanline<<(yshift-4))&ymask)<<1; // Y-Offset into tile
 
   // Find name table line:
   if (pvid->reg[12]&1)
   {
     nametab=(pvid->reg[3]&0x3c)<<9; // 40-cell mode
-    nametab+=(est->DrawScanline>>3)<<6;
+    nametab+=(est->DrawScanline>>(yshift-1))<<6;
   }
   else
   {
     nametab=(pvid->reg[3]&0x3e)<<9; // 32-cell mode
-    nametab+=(est->DrawScanline>>3)<<5;
+    nametab+=(est->DrawScanline>>(yshift-1))<<5;
   }
-
-  tilex=tstart<<1;
 
   if (prio && !(est->rendstatus & PDRAW_WND_DIFF_PRIO)) {
     // all tiles processed in low prio pass
     return;
   }
 
+  tilex=tstart<<1;
   tend<<=1;
-  ty=(est->DrawScanline&7)<<1; // Y-Offset into tile
 
   // Draw tiles across screen:
   if (!sh)
   {
     for (; tilex < tend; tilex++)
     {
-      unsigned int pack;
-      int dx, addr;
-      int pal;
+      int dx, pal;
 
       code = PicoMem.vram[nametab + tilex];
       if ((code>>15) != prio) {
@@ -636,30 +642,16 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
       }
       if (code==blank) continue;
 
-      // Get tile address/2:
-      addr=(code&0x7ff)<<4;
-      if (code&0x1000) addr+=14-ty; else addr+=ty; // Y-flip
-
-      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-      if (!pack) {
-        blank = code;
-        continue;
-      }
-
-      pal = ((code >> 9) & 0x30);
       dx = 8 + (tilex << 3);
 
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
+      DrawTile(~0,yshift,ymask,code,0);
     }
   }
   else
   {
     for (; tilex < tend; tilex++)
     {
-      unsigned int pack;
-      int dx, addr;
-      int pal;
+      int dx, pal;
 
       code = PicoMem.vram[nametab + tilex];
       if((code>>15) != prio) {
@@ -677,53 +669,37 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
         pal |= 0x80;
       }
       if(code==blank) continue;
-
-      // Get tile address/2:
-      addr=(code&0x7ff)<<4;
-      if (code&0x1000) addr+=14-ty; else addr+=ty; // Y-flip
-
-      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-      if (!pack) {
-        blank = code;
-        continue;
-      }
-
       dx = 8 + (tilex << 3);
 
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
+      DrawTile(~0,yshift,ymask,code,0);
     }
   }
 }
 
 // --------------------------------------------
 
-static void DrawTilesFromCacheShPrep(void)
-{
-  // as some layer has covered whole line with hi priority tiles,
-  // we can process whole line and then act as if sh/hi mode was off,
-  // but leave lo pri op sprite markers alone
-  int c = 320/4, *zb = (int *)(Pico.est.HighCol+8);
-  Pico.est.rendstatus |= PDRAW_SHHI_DONE;
-  while (c--)
-  {
-    *zb++ &= 0x7f7f7f7f;
-  }
-}
-
 static void DrawTilesFromCache(u32 *hc, int sh, int rlim, struct PicoEState *est)
 {
   unsigned char *pd = est->HighCol;
-  u32 code, dx;
-  u32 pack;
-  int pal;
+  u32 code, dx, pack;
+  int pal, hs;
 
-  // *ts->hc++ = code | (dx<<16) | (ty<<25); // cache it
+  // *ts->hc++ = code | (dx<<16) | (ty<<26); // cache it
 
   if (sh && (est->rendstatus & (PDRAW_SHHI_DONE|PDRAW_PLANE_HI_PRIO)))
   {
-    if (!(est->rendstatus & PDRAW_SHHI_DONE))
-      DrawTilesFromCacheShPrep();
+    if (!(est->rendstatus & PDRAW_SHHI_DONE)) {
+      // as some layer has covered whole line with hi priority tiles,
+      // we can process whole line and then act as if sh/hi mode was off,
+      // but leave lo pri op sprite markers alone
+      int *zb = (int *)(Pico.est.HighCol+8);
+      int c = 320 / 4;
+      while (c--)
+      {
+        *zb++ &= 0x7f7f7f7f;
+      }
+      Pico.est.rendstatus |= PDRAW_SHHI_DONE;
+    }
     sh = 0;
   }
 
@@ -731,13 +707,8 @@ static void DrawTilesFromCache(u32 *hc, int sh, int rlim, struct PicoEState *est
   {
     while ((code=*hc++)) {
       pack = *hc++;
-      if (!pack)
-        continue;
-
       dx = (code >> 16) & 0x1ff;
       pal = ((code >> 9) & 0x30);
-      if (rlim-dx < 0)
-        goto last_cut_tile;
 
       if (code & 0x0800) TileFlip(pd + dx, pack, pal);
       else               TileNorm(pd + dx, pack, pal);
@@ -748,57 +719,33 @@ static void DrawTilesFromCache(u32 *hc, int sh, int rlim, struct PicoEState *est
     while ((code=*hc++)) {
       unsigned char *zb;
 
-      dx = (code >> 16) & 0x1ff;
-      zb = est->HighCol+dx;
-      *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f;
-      *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f;
-
       pack = *hc++;
-      if (!pack)
-        continue;
-
+      dx = (code >> 16) & 0x1ff;
       pal = ((code >> 9) & 0x30);
-      if (rlim - dx < 0)
-        goto last_cut_tile;
 
-      if (code & 0x0800) TileFlip(pd + dx, pack, pal);
-      else               TileNorm(pd + dx, pack, pal);
-    }
-  }
-  return;
-
-last_cut_tile:
-  // for vertical window cutoff
-  {
-    unsigned int t;
-
-    pd += dx;
-    if (code&0x0800)
-    {
-      switch (rlim-dx+8)
-      {
-        case 7: t=pack&0x00000f00; if (t) pd[6]=(unsigned char)(pal|(t>> 8)); // "break" is left out intentionally
-        case 6: t=pack&0x000000f0; if (t) pd[5]=(unsigned char)(pal|(t>> 4));
-        case 5: t=pack&0x0000000f; if (t) pd[4]=(unsigned char)(pal|(t    ));
-        case 4: t=pack&0xf0000000; if (t) pd[3]=(unsigned char)(pal|(t>>28));
-        case 3: t=pack&0x0f000000; if (t) pd[2]=(unsigned char)(pal|(t>>24));
-        case 2: t=pack&0x00f00000; if (t) pd[1]=(unsigned char)(pal|(t>>20));
-        case 1: t=pack&0x000f0000; if (t) pd[0]=(unsigned char)(pal|(t>>16));
-        default: break;
+      zb = est->HighCol+dx;
+      if (likely(~code & (1<<25))) {
+        *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f;
+        *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f; *zb++ &= 0x7f;
+      } else {
+        hs = dx & 7;
+        if (*hc == 0) // last tile?
+          switch (8-hs) { case 7: *zb++ &= 0x7f;
+            case 6: *zb++ &= 0x7f; case 5: *zb++ &= 0x7f; case 4: *zb++ &= 0x7f;
+            case 3: *zb++ &= 0x7f; case 2: *zb++ &= 0x7f; case 1: *zb++ &= 0x7f;
+          }
+        else { // first tile
+          zb += 8-hs;
+          switch (hs) { case 7: *zb++ &= 0x7f;
+            case 6: *zb++ &= 0x7f; case 5: *zb++ &= 0x7f; case 4: *zb++ &= 0x7f;
+            case 3: *zb++ &= 0x7f; case 2: *zb++ &= 0x7f; case 1: *zb++ &= 0x7f;
+          }
+        }
       }
-    }
-    else
-    {
-      switch (rlim-dx+8)
-      {
-        case 7: t=pack&0x00f00000; if (t) pd[6]=(unsigned char)(pal|(t>>20));
-        case 6: t=pack&0x0f000000; if (t) pd[5]=(unsigned char)(pal|(t>>24));
-        case 5: t=pack&0xf0000000; if (t) pd[4]=(unsigned char)(pal|(t>>28));
-        case 4: t=pack&0x0000000f; if (t) pd[3]=(unsigned char)(pal|(t    ));
-        case 3: t=pack&0x000000f0; if (t) pd[2]=(unsigned char)(pal|(t>> 4));
-        case 2: t=pack&0x00000f00; if (t) pd[1]=(unsigned char)(pal|(t>> 8));
-        case 1: t=pack&0x0000f000; if (t) pd[0]=(unsigned char)(pal|(t>>12));
-        default: break;
+
+      if (pack) {
+        if (code & 0x0800) TileFlip(pd + dx, pack, pal);
+        else               TileNorm(pd + dx, pack, pal);
       }
     }
   }
@@ -1112,211 +1059,33 @@ static void DrawSpritesHiAS(unsigned char *sprited, int sh)
 #ifdef FORCE
 // NB lots of duplicate code, all for the sake of a small performance gain.
 
-static void DrawStripForced(struct TileStrip *ts, int cellskip)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  int tilex, dx, ty, addr=0, cells;
-  u32 code = 0, oldcode = -1;
-  int pal = 0;
-
-  // Draw tiles across screen:
-  tilex=((-ts->hscroll)>>3)+cellskip;
-  ty=(ts->line&7)<<1; // Y-Offset into tile
-  dx=((ts->hscroll-1)&7)+1;
-  cells = ts->cells - cellskip;
-  if(dx != 8) cells++; // have hscroll, need to draw 1 cell more
-  dx+=cellskip<<3;
-
-  for (; cells > 0; dx+=8, tilex++, cells--)
-  {
-    u32 pack;
-
-    code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];
-
-    if (code!=oldcode) {
-      oldcode = code;
-      // Get tile address/2:
-      addr = ((code&0x7ff)<<4) + ty;
-      if (code & 0x1000) addr^=0xe; // Y-flip
-
-      pal = (code>>9)&0x30;
-    }
-
-    pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-
-    if (code & 0x0800) TileFlip_and(pd + dx, pack, pal);
-    else               TileNorm_and(pd + dx, pack, pal);
-  }
+// Forced tile drawing, without any masking and blank handling
+#define DrawTileForced(mask,yshift,ymask,hpcode,cache) {		\
+    if (code!=oldcode) {						\
+      oldcode = code;							\
+									\
+      /* Get tile address/2: */						\
+      u32 addr = ((code<<yshift)&0x7ff0) + ty;				\
+      if (code & 0x1000) addr ^= ymask<<1; /* Y-flip */			\
+									\
+      pal = ((code>>9)&0x30);						\
+      pal |= 0xc0; /* leave s/h bits untouched in pixel "and" */	\
+									\
+      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));			\
+    }									\
+    if (code & 0x0800) TileFlip_and(pd + dx, pack, pal);		\
+    else               TileNorm_and(pd + dx, pack, pal);		\
 }
 
-static void DrawStripVSRamForced(struct TileStrip *ts, int plane_sh, int cellskip)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  int tilex, dx, ty=0, addr=0, cell=0, nametabadd=0;
-  u32 code=0, oldcode=-1;
-  int pal=0, scan=Pico.est.DrawScanline, plane;
+static DrawStripMaker(DrawStripForced, 4, 0x7, 0, DrawTileForced, 0);
 
-  // Draw tiles across screen:
-  plane = plane_sh & LF_PLANE;
-  tilex=(-ts->hscroll)>>3;
-  dx=((ts->hscroll-1)&7)+1;
-  if (ts->hscroll & 0x0f) {
-    int adj = ((ts->hscroll ^ dx) >> 3) & 1;
-    cell -= adj + 1;
-    ts->cells -= adj;
-    PicoMem.vsram[0x3e] = PicoMem.vsram[0x3f] = plane_sh >> 16;
-  }
-  cell+=cellskip;
-  tilex+=cellskip;
-  dx+=cellskip<<3;
+static DrawStripMaker(DrawStripInterlaceForced, 5, 0xf, 0, DrawTileForced, 0);
 
-  if ((cell&1)==1)
-  {
-    int line,vscroll;
-    vscroll = PicoMem.vsram[plane + (cell&0x3e)];
+static DrawStripVSRamMaker(DrawStripVSRamForced, 4, 0x7, 0, DrawTileForced, 0);
 
-    // Find the line in the name table
-    line=(vscroll+scan)&ts->line&0xffff; // ts->line is really ymask ..
-    nametabadd=(line>>3)<<(ts->line>>24);    // .. and shift[width]
-    ty=(line&7)<<1; // Y-Offset into tile
-  }
-  for (; cell < ts->cells; dx+=8,tilex++,cell++)
-  {
-    unsigned int pack;
+static DrawStripVSRamMaker(DrawStripVSRamInterlaceForced, 5, 0xf, 0, DrawTileForced, 0);
 
-    if ((cell&1)==0)
-    {
-      int line,vscroll;
-      vscroll = PicoMem.vsram[plane + (cell&0x3e)];
-
-      // Find the line in the name table
-      line=(vscroll+scan)&ts->line&0xffff; // ts->line is really ymask ..
-      nametabadd=(line>>3)<<(ts->line>>24);    // .. and shift[width]
-      ty=(line&7)<<1; // Y-Offset into tile
-    }
-
-    code=PicoMem.vram[ts->nametab+nametabadd+(tilex&ts->xmask)];
-
-    if (code!=oldcode) {
-      oldcode = code;
-      // Get tile address/2:
-      addr=(code&0x7ff)<<4;
-
-      pal = (code>>9)&0x30; // shadow
-    }
-
-    pack = code & 0x1000 ? ty^0xe : ty; // Y-flip
-    pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr+pack));
-
-    if (code & 0x0800) TileFlip_and(pd + dx, pack, pal);
-    else               TileNorm_and(pd + dx, pack, pal);
-  }
-}
-
-void DrawStripInterlaceForced(struct TileStrip *ts)
-{
-  unsigned char *pd = Pico.est.HighCol;
-  int tilex = 0, dx = 0, ty = 0, cells;
-  int oldcode = -1;
-  unsigned int pal = 0, pack = 0;
-
-  // Draw tiles across screen:
-  tilex=(-ts->hscroll)>>3;
-  ty=(ts->line&15)<<1; // Y-Offset into tile
-  dx=((ts->hscroll-1)&7)+1;
-  cells = ts->cells;
-  if(dx != 8) cells++; // have hscroll, need to draw 1 cell more
-
-  for (; cells; dx+=8,tilex++,cells--)
-  {
-    u32 code = PicoMem.vram[ts->nametab + (tilex & ts->xmask)];
-
-    if (code!=oldcode) {
-      oldcode = code;
-
-      // Get tile address/2:
-      u32 addr = ((code&0x3ff)<<5) + ty;
-      if (code & 0x1000) addr ^= 0x1e; // Y-flip
-
-      pal = (code>>9)&0x30; // shadow
-
-      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));
-    }
-
-    if (code & 0x0800) TileFlip_and(pd + dx, pack, pal);
-    else               TileNorm_and(pd + dx, pack, pal);
-  }
-}
-
-// XXX only duplicated to avoid ARM asm hassles
-static void DrawLayerForced(int plane_sh, int cellskip, int maxcells,
-  struct PicoEState *est)
-{
-  struct PicoVideo *pvid=&est->Pico->video;
-  const char shift[4]={5,6,5,7}; // 32,64 or 128 sized tilemaps (2 is invalid)
-  struct TileStrip ts;
-  int width, height, ymask;
-  int vscroll, htab;
-
-  ts.cells=maxcells;
-
-  // Work out the TileStrip to draw
-
-  // Work out the name table size: 32 64 or 128 tiles (0-3)
-  width=pvid->reg[16];
-  height=(width>>4)&3; width&=3;
-
-  ts.xmask=(1<<shift[width])-1; // X Mask in tiles (0x1f-0x7f)
-  ymask=(height<<8)|0xff;       // Y Mask in pixels
-  switch (width) {
-    case 1: ymask &= 0x1ff; break;
-    case 2: ymask =  0x007; break;
-    case 3: ymask =  0x0ff; break;
-  }
-
-  // Find name table:
-  if (plane_sh&1) ts.nametab=(pvid->reg[4]&0x07)<<12; // B
-  else            ts.nametab=(pvid->reg[2]&0x38)<< 9; // A
-
-  htab=pvid->reg[13]<<9; // Horizontal scroll table address
-  switch (pvid->reg[11]&3) {
-    case 1: htab += (est->DrawScanline<<1) &  0x0f; break;
-    case 2: htab += (est->DrawScanline<<1) & ~0x0f; break; // Offset by tile
-    case 3: htab += (est->DrawScanline<<1);         break; // Offset by line
-  }
-  htab+=plane_sh&1; // A or B
-
-  // Get horizontal scroll value, will be masked later
-  ts.hscroll = PicoMem.vram[htab & 0x7fff];
-
-  if((pvid->reg[12]&6) == 6) {
-    // interlace mode 2
-    vscroll = PicoMem.vsram[plane_sh & 1]; // Get vertical scroll value
-
-    // Find the line in the name table
-    ts.line=(vscroll+(est->DrawScanline<<1))&((ymask<<1)|1);
-    ts.nametab+=(ts.line>>4)<<shift[width];
-
-    DrawStripInterlaceForced(&ts);
-  } else if( pvid->reg[11]&4) {
-    // shit, we have 2-cell column based vscroll
-    // luckily this doesn't happen too often
-    ts.line=ymask|(shift[width]<<24); // save some stuff instead of line
-    // vscroll value for leftmost cells in case of hscroll not on 16px boundary
-    // XXX it's unclear what exactly the hw is doing. Continue reading where it
-    // stopped last seems to work best (H40: 0x50 (wrap->0x00), H32 0x40).
-    plane_sh |= PicoMem.vsram[(pvid->reg[12]&1?0x00:0x20) + (plane_sh&1)] << 16;
-    DrawStripVSRamForced(&ts, plane_sh, cellskip);
-  } else {
-    vscroll = PicoMem.vsram[plane_sh & 1]; // Get vertical scroll value
-
-    // Find the line in the name table
-    ts.line=(vscroll+est->DrawScanline)&ymask;
-    ts.nametab+=(ts.line>>3)<<shift[width];
-
-    DrawStripForced(&ts, cellskip);
-  }
-}
+static DrawLayerMaker(DrawLayerForced,DrawStripForced,DrawStripInterlaceForced,DrawStripVSRamForced,DrawStripVSRamInterlaceForced);
 
 static void DrawSpritesForced(unsigned char *sprited)
 {
@@ -1346,6 +1115,7 @@ static void DrawSpritesForced(unsigned char *sprited)
     sprite = Pico.est.HighPreSpr + offs;
     code = sprite[1];
     pal = (code>>9)&0x30;
+    pal |= 0xc0; // leave s/h bits untouched in pixel "and"
 
     if (code&0x800) fTileFunc = TileFlipSH_AS_and;
     else            fTileFunc = TileNormSH_AS_and;
@@ -1387,7 +1157,7 @@ static void DrawSpritesForced(unsigned char *sprited)
   }
 
   // anything not covered by a sprite is off 
-  // XXX Titan hw notes say that transparent pixels remove shadow. Is this also
+  // TODO Titan hw notes say that transparent pixels remove shadow. Is this also
   // the case in areas where no sprites are displayed?
   for (cnt = 1; cnt < sizeof(mb)-1; cnt++)
     if (mb[cnt] == 0xff) {
@@ -1855,9 +1625,9 @@ static int DrawDisplay(int sh)
   est->HighPreSpr = HighPreSpr + (sprited[0]&0x80)*2;
 
   if (pvid->reg[12]&1) {
-    maxw = 328; maxcells = 40;
+    maxw = 320; maxcells = 40;
   } else {
-    maxw = 264; maxcells = 32;
+    maxw = 256; maxcells = 32;
   }
 
   // Find out if the window is on this line:
@@ -1884,7 +1654,7 @@ static int DrawDisplay(int sh)
   /* - layer B low - */
   if (!(pvid->debug_p & PVD_KILL_B)) {
     lflags = LF_PLANE_B | (sh<<1);
-    DrawLayer(lflags, HighCacheB, 0, maxcells, est);
+    DrawLayer(lflags | LF_LINE, HighCacheB, 0, maxcells, est);
   }
   /* - layer A low - */
   lflags = LF_PLANE_A | (sh<<1);
@@ -1897,7 +1667,7 @@ static int DrawDisplay(int sh)
     DrawWindow(                   (win&0x80) ? edge :       0, (win&0x80) ? maxcells>>1 : edge, 0, sh, est);
   }
   else
-    DrawLayer(lflags, HighCacheA, 0, maxcells, est);
+    DrawLayer(lflags | LF_LINE, HighCacheA, 0, maxcells, est);
   /* - sprites low - */
   if (pvid->debug_p & PVD_KILL_S_LO)
     ;
@@ -1937,10 +1707,11 @@ static int DrawDisplay(int sh)
 #ifdef FORCE
   if (pvid->debug_p & PVD_FORCE_B) {
     lflags = LF_PLANE_B | (sh<<1);
-    DrawLayerForced(lflags, 0, maxcells, est);
+    DrawLayerForced(lflags, NULL, 0, maxcells, est);
   } else if (pvid->debug_p & PVD_FORCE_A) {
+    // TODO what happens in windowed mode? 
     lflags = LF_PLANE_A | (sh<<1);
-    DrawLayerForced(lflags, 0, maxcells, est);
+    DrawLayerForced(lflags, NULL, 0, maxcells, est);
   } else if (pvid->debug_p & PVD_FORCE_S)
     DrawSpritesForced(sprited);
 #endif

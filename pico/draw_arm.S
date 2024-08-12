@@ -1,7 +1,7 @@
 /*
  * assembly optimized versions of most funtions from draw.c
  * (C) notaz, 2006-2010,2017
- * (C) kub, 2020
+ * (C) irixxxx, 2020-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -433,11 +433,11 @@ DrawLayer:
     movs    r3, r9, lsl #1  @ (force[31]|sh[30]) << 1
     mov     r3, #0
     orrmi   r10,r10, #1<<23 @ r10=cells[31:24]|sh[23]|hi_not_empty[22]
-@    orrcc   r10,r10, #1<<20 @    |had_output[21]|!force[20]|ty[15:0]
+@    orrcc   r10,r10, #1<<20 @   |had_output[21]|!force[20]|hscroll[18:16]|ty[15:0]
     movmi   r3, #0x80       @ default to shadowed pal on sh mode
 
-    cmp     r7, #8
-    addne   r10,r10, #0x01000000 @ we will loop cells+1 times if there is scroll
+    and     r4, r7, #7
+    orr     r10,r10, r4, lsl #16 @ we will process cells+1 if there is scroll
 
     and     r9, r9, #0xff00
     add     r8, r8, r9, lsr #8   @ tilex+=cellskip
@@ -452,9 +452,38 @@ DrawLayer:
     mvn     r9, #0               @ r9=prevcode=-1
     add     r1, r11, r7          @ r1=pdest
 
-    @ r10=cells[31:24]|sh[23]|hi_not_empty[22]|had_output[21]|!force[20]|ty[15:0]
+    @ r10=cells[31:24]|sh[23]|hi_not_empty[22]|had_output[21]|!force[20]|hscroll[18:16]|ty[15:0]
     @ r1=pd+dx r2=pack r3=pal r5=xmask r6=hc r8=tilex r9=prevcode r11=HighCol r12=nametab lr=vram
     @ r4 & r7 are scratch in this loop
+
+    ands    r4, r10, #7<<16  @ hscroll?
+    beq     .dsloop_subr1
+    subs    r10,r10, #0x01000000
+    bmi     .dsloop_exit
+
+    and     r7, r5, r8         @ do first cut tile
+    add     r7, lr, r7, lsl #1 @ Pico.vram+((tilex&ts->xmask) as halfwords)
+    ldrh    r9, [r7, r12]      @ r7=code (int, but from unsigned, no sign extend)
+
+    add     r8, r8, #1
+
+    tst     r9, #0x1000     @ if (code&0x1000)
+    mov     r2, r9, lsl #21
+    add     r2, r2, r10, lsl #17
+    eorne   r2, r2, #0xe<<17 @ if (code&0x1000) addr^=0xe;
+
+    ldr     r2, [lr, r2, lsr #16] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
+
+    mvn     r7, #0
+    mov     r4, r4, lsr #16-2  @ (dx&7)*4
+    tst     r9, #0x0800
+    moveq   r7, r7, lsl r4     @ mask = ~0 [shift] (dx&7)*4
+    movne   r7, r7, lsr r4
+    bic     r2, r2, r7, ror #16 @ pack&~mask
+
+    orr     r9, r9, #0x80000000 @ invalidate oldcode since pack is masked
+    b       .DrawStrip_samecode
+
 .dsloop_subr1:
     sub     r1, r1, #8
 .dsloop: @ 40-41 times
@@ -473,14 +502,12 @@ DrawLayer:
 
     mov     r9, r7          @ remember code
 
-    movs    r2, r9, lsl #20 @ if (code&0x1000)
-    mov     r2, r2, lsl #1
+    tst     r9, #0x1000     @ if (code&0x1000)
+    mov     r2, r9, lsl #21
     add     r2, r2, r10, lsl #17
-    mov     r2, r2, lsr #17
-    eorcs   r2, r2, #0x0e   @ if (code&0x1000) addr^=0xe;
+    eorne   r2, r2, #0x0e<<17 @ if (code&0x1000) addr^=0xe;
 
-    ldr     r2, [lr, r2, lsl #1] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
-
+    ldr     r2, [lr, r2, lsr #16] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
 .DrawStrip_samecode:
     tst     r9, #0x8000
 @    tstne   r10, #1<<20     @ !force[20]
@@ -538,6 +565,33 @@ DrawLayer:
     b       .dsloop
 
 .dsloop_exit:
+    ands    r4,r10, #7<<16        @ hscroll?
+    beq     .DrawStrip_noscroll
+
+    and     r7, r5, r8         @ do one more cut tile
+    add     r7, lr, r7, lsl #1 @ Pico.vram+((tilex&ts->xmask) as halfwords)
+    ldrh    r9, [r7, r12]      @ r7=code (int, but from unsigned, no sign extend)
+
+    add     r1, r1, #8
+
+    tst     r9, #0x1000     @ if (code&0x1000)
+    mov     r2, r9, lsl #21
+    add     r2, r2, r10, lsl #17
+    eorne   r2, r2, #0x0e<<17 @ if (code&0x1000) addr^=0xe;
+
+    ldr     r2, [lr, r2, lsr #16] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
+
+    mvn     r7, #0
+    mov     r4, r4, lsr #16-2  @ (dx&7)*4
+    tst     r9, #0x0800
+    moveq   r7, r7, lsl r4     @ mask = ~0 [shift] (dx&7)*4
+    movne   r7, r7, lsr r4
+    and     r2, r2, r7, ror #16 @ pack&mask
+
+    bic     r10,r10, #7<<16
+    b       .DrawStrip_samecode @ one last time, with last tile now masked
+
+.DrawStrip_noscroll:
     tst     r10, #1<<21 @ seen non hi-prio tile
     ldr     r1, [sp, #9*4]  @ est
     mov     r0, #0
@@ -684,13 +738,12 @@ DrawLayer:
 
     mov     r9, r7          @ remember code
 
-    movs    r2, r9, lsl #20 @ if (code&0x1000)
-    mov     r2, r2, lsl #1
+    tst     r9, #0x1000     @ if (code&0x1000)
+    mov     r2, r9, lsl #21
     add     r2, r2, r10, lsl #17
-    mov     r2, r2, lsr #17
-    eorcs   r2, r2, #0x0e   @ if (code&0x1000) addr^=0xe;
+    eorne   r2, r2, #0x0e<<17 @ if (code&0x1000) addr^=0xe;
 
-    ldr     r2, [lr, r2, lsl #1] @ pack=*(unsigned int *)(PicoMem.vram+addr); // Get 8 pixels
+    ldr     r2, [lr, r2, lsr #16] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
 
 .DrawStrip_vs_samecode:
     tst     r9, #0x8000
@@ -939,15 +992,16 @@ DrawTilesFromCache:
     b       .dtfc_loop
 
 .dtfc_cut_tile:
-    add     r4, r4, #7      @ 0-6
+    cmn     r4, #8
+    ble     .dtfc_loop      @ off limits
+
+    rsb     r4, r4, #0      @ 1-7
     mov     r4, r4, lsl #2
-    mov     r12,#0xf<<28
-    mov     r12,r12,asr r4
-    mov     r2, r2, ror #16
+    mvn     r12,#0
     tst     r6, #0x0800     @ flipped?
-    mvnne   r12,r12
-    and     r2, r2, r12
-    mov     r2, r2, ror #16
+    moveq   r12,r12, lsl r4
+    movne   r12,r12, lsr r4
+    and     r2, r2, r12, ror #16
     mov     r12,#0xf
     tst     r8, #1
     bne     .dtfc_shadow
@@ -1091,9 +1145,7 @@ DrawSpriteSHi:
     cmp     r0, #328
     bge     DrawSpriteSHi
 
-    mov     r8, r8, lsl #17
-    mov     r8, r8, lsr #17    @ tile&=0x7fff; // Clip tile address
-
+    bic     r8, r8, #0xf8000   @ tile&=0x7fff; // Clip tile address
     ldr     r2, [lr, r8, lsl #1] @ pack=*(unsigned int *)(PicoMem.vram+addr); // Get 8 pixels
     add     r1, r11, r0        @ r1=pdest
     tst     r2, r2
@@ -1285,9 +1337,7 @@ DrawSprite:
     cmp     r0, #328
     bge     DrawSprite
 
-    mov     r8, r8, lsl #17
-    mov     r8, r8, lsr #17    @ tile&=0x7fff; // Clip tile address
-
+    bic     r8, r8, #0xf8000   @ tile&=0x7fff; // Clip tile address
     ldr     r2, [lr, r8, lsl #1] @ pack=*(unsigned int *)(PicoMem.vram+addr); // Get 8 pixels
     add     r1, r11, r0        @ r1=pdest
     tst     r2, r2
@@ -1431,15 +1481,15 @@ DrawWindow:
 
     mov     r9, r7          @ remember code
 
-    movs    r2, r9, lsl #20 @ if (code&0x1000)
-    mov     r2, r2, lsl #1
-    add     r2, r10, r2, lsr #17 @ r2=addr=(code&0x7ff)<<4; addr+=ty
-    eorcs   r2, r2, #0x0e   @ if (code&0x1000) addr^=0xe;
+    tst     r9, #0x1000     @ if (code&0x1000)
+    mov     r2, r9, lsl #21
+    add     r2, r2, r10, lsl #17
+    eorne   r2, r2, #0xe<<17 @ if (code&0x1000) addr^=0xe;
+
+    ldr     r2, [lr, r2, lsr #16] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
 
     and     r3, r9, #0x6000
     mov     r3, r3, lsr #9  @ r3=pal=((code&0x6000)>>9);
-
-    ldr     r2, [lr, r2, lsl #1] @ pack=*(unsigned int *)(Pico.vram+addr); // Get 8 pixels
 
 .dw_samecode:
     tst     r6, #0x100

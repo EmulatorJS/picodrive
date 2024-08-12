@@ -2,6 +2,7 @@
  * memory handling
  * (c) Copyright Dave, 2004
  * (C) notaz, 2006-2010
+ * (C) irixxxx, 2019-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -530,7 +531,8 @@ void NOINLINE ctl_write_z80busreq(u32 d)
   {
     if (d)
     {
-      Pico.t.z80c_aim = Pico.t.z80c_cnt = z80_cycles_from_68k() + (Pico.t.z80_busdelay >> 8) + 2;
+      Pico.t.z80c_aim = Pico.t.z80c_cnt = z80_cycles_from_68k() + 2;
+      Pico.t.z80c_cnt += Pico.t.z80_busdelay >> 8;
       Pico.t.z80_busdelay &= 0xff;
     }
     else
