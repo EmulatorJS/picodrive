@@ -37,6 +37,7 @@
 
 #if defined(RENDER_GSKIT_PS2)
 #include <malloc.h>
+#include <kernel.h>
 #include "libretro-common/include/libretro_gskit_ps2.h"
 #include "ps2/asm.h"
 #else
@@ -1285,22 +1286,6 @@ static const char *find_bios(int *region, const char *cd_fname)
    int i, count;
    FILE *f = NULL;
 
-   // look for MSU.MD rom file. XXX another extension list? ugh...
-   static const char *md_exts[] = { "gen", "smd", "md", "32x" };
-   char *ext = strrchr(cd_fname, '.');
-   int extpos = ext ? ext-cd_fname : strlen(cd_fname);
-   strcpy(path, cd_fname);
-   path[extpos++] = '.';
-   for (i = 0; i < ARRAY_SIZE(md_exts); i++) {
-      strcpy(path+extpos, md_exts[i]);
-      f = fopen(path, "rb");
-      if (f != NULL) {
-         log_cb(RETRO_LOG_INFO, "found MSU rom: %s\n", path);
-         fclose(f);
-         return path;
-      }
-   }
-
    if (*region == 4) { // US
       files = biosfiles_us;
       count = sizeof(biosfiles_us) / sizeof(char *);
@@ -1332,6 +1317,31 @@ static const char *find_bios(int *region, const char *cd_fname)
          log_cb(RETRO_LOG_INFO, "using bios: %s\n", path);
       fclose(f);
       return path;
+   }
+
+   return NULL;
+}
+
+static const char *find_msu(const char *cd_fname)
+{
+   static char path[256];
+   FILE *f = NULL;
+   int i;
+
+   // look for MSU.MD rom file. XXX another extension list? ugh...
+   static const char *md_exts[] = { "gen", "smd", "md", "32x" };
+   char *ext = strrchr(cd_fname, '.');
+   int extpos = ext ? ext-cd_fname : strlen(cd_fname);
+   strcpy(path, cd_fname);
+   path[extpos++] = '.';
+   for (i = 0; i < ARRAY_SIZE(md_exts); i++) {
+      strcpy(path+extpos, md_exts[i]);
+      f = fopen(path, "rb");
+      if (f != NULL) {
+         log_cb(RETRO_LOG_INFO, "found MSU rom: %s\n", path);
+         fclose(f);
+         return path;
+      }
    }
 
    return NULL;
@@ -1585,7 +1595,7 @@ bool retro_load_game(const struct retro_game_info *info)
    make_system_path(carthw_path, sizeof(carthw_path), "carthw", ".cfg");
 
    media_type = PicoLoadMedia(content_path, content_data, content_size,
-         carthw_path, find_bios, NULL);
+         carthw_path, find_bios, find_msu, NULL);
 
    disk_current_index = cd_index;
 

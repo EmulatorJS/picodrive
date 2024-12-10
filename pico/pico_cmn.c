@@ -51,10 +51,12 @@ static int SekSyncM68k(int once)
     // accessing the main bus. Account for these by shortening the time
     // the 68K CPU runs.
     int z80_buscyc = Pico.t.z80_buscycles >> (~Pico.m.scanline & 1);
-    if (z80_buscyc <= cyc_do)
-      SekExecM68k(cyc_do - z80_buscyc);
-    else
-      z80_buscyc = cyc_do;
+    // NB the Z80 isn't fast enough to steal more than half the bandwidth.
+    // the fastest would be POP cc which takes 10+~3.3*2 z-cyc (~35 cyc) for a
+    // 16 bit value, but 68k is only blocked for ~16 cyc for the 2 bus cycles.
+    if (z80_buscyc > cyc_do/2)
+      z80_buscyc = cyc_do/2;
+    SekExecM68k(cyc_do - z80_buscyc);
     Pico.t.m68c_cnt += z80_buscyc;
     Pico.t.z80_buscycles -= z80_buscyc;
     if (once) break;
@@ -244,9 +246,14 @@ static int PicoFrameHints(void)
   pv->pending_ints |= 0x20;
 
   if (pv->reg[1] & 0x20) {
-    if (Pico.t.m68c_cnt - Pico.t.m68c_aim < 60) // CPU blocked?
-      SekExecM68k(11); // HACK
+    // as per https://gendev.spritesmind.net/forum/viewtopic.php?t=2202, IRQ
+    // is usually sampled after operand reading, so the next instruction will
+    // be executed before the IRQ is taken.
+    if (Pico.t.m68c_cnt - Pico.t.m68c_aim < 40) // CPU blocked?
+      SekExecM68k(4);
     elprintf(EL_INTS, "vint: @ %06x [%u]", SekPc, SekCyclesDone());
+    // TODO: IRQ usually sampled after operand reading, so insn can't turn it
+    // off? single exception is MOVE.L which samples IRQ after the 1st write?
     SekInterrupt(6);
   }
 

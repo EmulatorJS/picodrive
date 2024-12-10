@@ -17,6 +17,13 @@ At present, most development activity occurs in
 [irixxxx's fork](https://github.com/irixxxx/picodrive);
 [notaz's repo](https://github.com/notaz/picodrive) is updated less frequently.
 
+### Using MSU, MD+/32X+, and Mode 1 on Sega/Mega CD
+
+PicoDrive supports using CD audio enhanced cartridge games in all 3 formats.
+To start an enhanced cartridge, load the .cue or .chd file. The cartridge
+file should have the same base name and be placed in the same directory.
+Further instructions can be found in `platform/base_readme.txt`.
+
 ### Sega Pico and Storyware Pages
 
 PicoDrive can use Storyware pages and pad overlays in png format in the same

@@ -9,7 +9,9 @@
 
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/mman.h>
+#ifndef __MINGW32__
+#include <sys/mman.h> // MAP_JIT
+#endif
 
 #include "../libpicofe/menu.h"
 #include "../libpicofe/plat.h"
@@ -309,6 +311,10 @@ void plat_status_msg_busy_first(const char *msg)
 	plat_status_msg_busy_next(msg);
 }
 
+void plat_status_msg_busy_done(void)
+{
+}
+
 void plat_update_volume(int has_changed, int is_up)
 {
 }
@@ -339,6 +345,10 @@ void pemu_forced_frame(int no_scale, int do_emu)
 
 	g_menubg_src_ptr = realloc(g_menubg_src_ptr, g_screen_height * g_screen_ppitch * 2);
 	memcpy(g_menubg_src_ptr, g_screen_ptr, g_screen_height * g_screen_ppitch * 2);
+	g_menubg_src_w = g_screen_width;
+	g_menubg_src_h = g_screen_height;
+	g_menubg_src_pp = g_screen_ppitch;
+
 	currentConfig.scaling = hs, currentConfig.vscaling = vs;
 }
 
@@ -478,9 +488,6 @@ void pemu_loop_end(void)
 	/* do one more frame for menu bg */
 	plat_video_set_shadow(320, 240);
 	pemu_forced_frame(0, 1);
-	g_menubg_src_w = g_screen_width;
-	g_menubg_src_h = g_screen_height;
-	g_menubg_src_pp = g_screen_ppitch;
 	if (ghost_buf) {
 		free(ghost_buf);
 		ghost_buf = NULL;

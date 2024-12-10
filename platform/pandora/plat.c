@@ -199,6 +199,10 @@ void plat_video_toggle_renderer(int change, int is_menu)
 		PicoDrawSetOutFormat(PDF_RGB555, 0);
 }
 
+void plat_video_menu_update(void)
+{
+}
+
 void plat_video_menu_enter(int is_rom_loaded)
 {
 }
@@ -238,6 +242,10 @@ void plat_status_msg_busy_next(const char *msg)
 void plat_status_msg_busy_first(const char *msg)
 {
 	plat_status_msg_busy_next(msg);
+}
+
+void plat_status_msg_busy_done(void)
+{
 }
 
 void plat_update_volume(int has_changed, int is_up)

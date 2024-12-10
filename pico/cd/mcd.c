@@ -9,6 +9,7 @@
 
 #include "../pico_int.h"
 #include "../sound/ym2612.h"
+#include "megasd.h"
 
 extern unsigned char formatted_bram[4*0x10];
 
@@ -18,6 +19,24 @@ static unsigned int mcd_m68k_cycle_base;
 static unsigned int mcd_s68k_cycle_base;
 
 mcd_state *Pico_mcd;
+
+PICO_INTERNAL void PicoCreateMCD(unsigned char *bios_data, int bios_size)
+{
+  if (!Pico_mcd) {
+    Pico_mcd = plat_mmap(0x05000000, sizeof(mcd_state), 0, 0);
+    if (Pico_mcd == NULL) {
+      elprintf(EL_STATUS, "OOM");
+      return;
+    }
+  }
+  memset(Pico_mcd, 0, sizeof(mcd_state));
+
+  if (bios_data && bios_size > 0) {
+    if (bios_size > sizeof(Pico_mcd->bios))
+      bios_size = sizeof(Pico_mcd->bios);
+    memcpy(Pico_mcd->bios, bios_data, bios_size);
+  }
+}
 
 PICO_INTERNAL void PicoInitMCD(void)
 {
@@ -58,8 +77,8 @@ PICO_INTERNAL void PicoPowerMCD(void)
   Pico_mcd->m.state_flags = PCD_ST_S68K_RST;
   Pico_mcd->m.busreq = 2;     // busreq on, s68k in reset
   Pico_mcd->s68k_regs[3] = 1; // 2M word RAM mode, m68k access
-  if (Pico.romsize <= 0x20000) // hack to detect BIOS, no GA HINT vector for MSU
-    memset(Pico.rom + 0x70, 0xff, 4);
+  if (Pico.romsize == 0) // no HINT vector from gate array for MSU
+    memset(Pico_mcd->bios + 0x70, 0xff, 4);
 }
 
 void pcd_soft_reset(void)
@@ -96,6 +115,7 @@ PICO_INTERNAL int PicoResetMCD(void)
   }
   Pico.sv.start = Pico.sv.end = 0; // unused
 
+  msd_reset();
   return 0;
 }
 
@@ -149,11 +169,13 @@ static void pcd_cdc_event(unsigned int now)
   {
     /* reset CDD command wait flag */
     Pico_mcd->s68k_regs[0x4b] = 0xf0;
+  }
 
-    if ((Pico_mcd->s68k_regs[0x33] & PCDS_IEN4) && (Pico_mcd->s68k_regs[0x37] & 4)) {
-      elprintf(EL_INTS|EL_CD, "s68k: cdd irq 4");
-      pcd_irq_s68k(4, 1);
-    }
+  msd_update();
+
+  if ((Pico_mcd->s68k_regs[0x33] & PCDS_IEN4) && (Pico_mcd->s68k_regs[0x37] & 4)) {
+    elprintf(EL_INTS|EL_CD, "s68k: cdd irq 4");
+    pcd_irq_s68k(4, 1);
   }
 
   pcd_event_schedule(now, PCD_EVENT_CDC, 12500000/75);
@@ -312,8 +334,7 @@ static int SekSyncM68k(int once);
 
 void pcd_run_cpus_normal(int m68k_cycles)
 {
-  // TODO this is suspicious. ~1 cycle refresh delay every 256 cycles?
-  SekAimM68k(m68k_cycles, 0x42); // Fhey area
+  SekAimM68k(m68k_cycles, 0x108);
 
   while (CYCLES_GT(Pico.t.m68c_aim, Pico.t.m68c_cnt)) {
     if (SekShouldInterrupt()) {

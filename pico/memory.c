@@ -421,8 +421,6 @@ static NOINLINE u32 port_read(int i)
   // Decap Attack reportedly doesn't work on Nomad but works on must
   // other MD revisions (different pull-up strength?).
   u32 mask = 0x3f;
-  if (CYCLES_GE(padTHLatency[i], SekCyclesDone()+100))
-    padTHLatency[i] = SekCyclesDone(); // kludge to cope with cycle wrap
   if (CYCLES_GE(SekCyclesDone(), padTHLatency[i])) {
     mask |= 0x40;
     padTHLatency[i] = SekCyclesDone();
@@ -432,6 +430,12 @@ static NOINLINE u32 port_read(int i)
   in = port_readers[i](i, out);
 
   return (in & ~ctrl_reg) | (data_reg & ctrl_reg);
+}
+
+// pad export for J-Cart
+u32 PicoReadPad(int i, u32 out_bits)
+{
+  return read_pad_3btn(i, out_bits);
 }
 
 void PicoSetInputDevice(int port, enum input_device device)
@@ -954,8 +958,10 @@ PICO_INTERNAL void PicoMemSetup(void)
   mask = (1 << M68K_MEM_SHIFT) - 1;
   rs = (Pico.romsize + mask) & ~mask;
   if (rs > 0xa00000) rs = 0xa00000; // max cartridge area
-  cpu68k_map_set(m68k_read8_map,  0x000000, rs - 1, Pico.rom, 0);
-  cpu68k_map_set(m68k_read16_map, 0x000000, rs - 1, Pico.rom, 0);
+  if (rs) {
+    cpu68k_map_set(m68k_read8_map,  0x000000, rs - 1, Pico.rom, 0);
+    cpu68k_map_set(m68k_read16_map, 0x000000, rs - 1, Pico.rom, 0);
+  }
 
   // Common case of on-cart (save) RAM, usually at 0x200000-...
   if ((Pico.sv.flags & SRF_ENABLED) && Pico.sv.data != NULL) {

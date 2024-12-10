@@ -20,6 +20,7 @@ extern int carthw_ssf2_active;
 extern unsigned char carthw_ssf2_banks[8];
 void carthw_ssf2_startup(void);
 void carthw_ssf2_write8(u32 a, u32 d);
+void carthw_ssf2_write16(u32 a, u32 d);
 
 /* misc */
 void carthw_Xin1_startup(void);
@@ -30,9 +31,12 @@ void carthw_sf001_startup(void);
 void carthw_sf002_startup(void);
 void carthw_sf004_startup(void);
 
+void carthw_flash_startup(void);
 void carthw_sprot_startup(void);
 void carthw_sprot_new_location(unsigned int a,
 	unsigned int mask, unsigned short val, int is_ro);
 
 void carthw_lk3_startup(void);
 void carthw_smw64_startup(void);
+
+void carthw_jcart_startup(void);

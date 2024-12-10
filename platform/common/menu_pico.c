@@ -88,7 +88,6 @@ static void make_bg(int no_scale, int from_screen)
 	int h = g_menubg_src_h ? g_menubg_src_h : g_screen_height;
 	int pp = g_menubg_src_pp ? g_menubg_src_pp : g_screen_ppitch;
 	short *dst;
-	int x, y;
 
 	if (from_screen) {
 		src = g_screen_ptr;
@@ -103,16 +102,25 @@ static void make_bg(int no_scale, int from_screen)
 
 	if (!no_scale && g_menuscreen_w / w >= 2 && g_menuscreen_h / h >= 2)
 	{
-		u32 t, *d = g_menubg_ptr;
-		d += (g_menuscreen_h / 2 - h * 2 / 2)
-			* g_menuscreen_w / 2;
-		d += (g_menuscreen_w / 2 - w * 2 / 2) / 2;
-		for (y = 0; y < h; y++, src += pp, d += g_menuscreen_w*2/2) {
-			for (x = 0; x < w; x++) {
-				t = src[x];
-				t = (PXMASKH(t,1)>>1) - (PXMASKH(t,3)>>3);
-				t |= t << 16;
-				d[x] = d[x + g_menuscreen_w / 2] = t;
+		int xf = g_menuscreen_w / w, yf = g_menuscreen_h / h;
+		int f = no_scale ? 1 : xf < yf ? xf : yf, xs = f * w, ys = f * h;
+		int x = (g_menuscreen_w - xs)/2, y = (g_menuscreen_h - ys)/2;
+		uint16_t *p = (uint16_t *)g_menubg_ptr;
+		uint16_t *q = (uint16_t *)src;
+
+		int i, j, k, l;
+		p += y * g_menuscreen_pp + x;
+		for (i = 0; i < h; i++) {
+			for (j = 0; j < w; j++, q++) {
+				uint16_t t = (PXMASKH(*q,1)>>1) - (PXMASKH(*q,3)>>3);
+				for (l = 0; l < f; l++)
+					*p++ = t;
+			}
+			p += g_menuscreen_pp - xs;
+			q += pp - w;
+			for (k = 1; k < f; k++) {
+				memcpy(p, p-g_menuscreen_pp, g_menuscreen_w*2);
+				p += g_menuscreen_pp;
 			}
 		}
 		return;
@@ -147,6 +155,8 @@ static void copy_bg(int dir)
 
 static void menu_draw_prep(void)
 {
+	plat_video_menu_update();
+
 	if (menu_w == g_menuscreen_w && menu_h == g_menuscreen_h)
 		return;
 	menu_w = g_menuscreen_w, menu_h = g_menuscreen_h;
@@ -414,7 +424,7 @@ const char *indev0_names[] = { "none", "3 button pad", "6 button pad", "Team pla
 const char *indev1_names[] = { "none", "3 button pad", "6 button pad", NULL };
 
 static char h_play34[] = "Works only for Mega Drive/CD/32X games having\n"
-				"support for Team player or 4 way play";
+				"support for Team player, 4 way play, or J-cart";
 
 static menu_entry e_menu_keyconfig[] =
 {

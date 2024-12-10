@@ -303,6 +303,7 @@ typedef struct
 	int pregap;		/* pregap for current track */
 	int sector_offset;	/* in current file */
 	int sector_xlength;
+	int loop, loop_lba;	/* MEGASD extensions */
 	enum cd_track_type type;
 } cd_track_t;
 
@@ -317,6 +318,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
   const unsigned char *rom, unsigned int romsize,
   const char *carthw_cfg_fname,
   const char *(*get_bios_filename)(int *region, const char *cd_fname),
+  const char *(*get_msu_filename)(const char *cd_fname),
   void (*do_region_override)(const char *media_filename));
 int PicoCdCheck(const char *fname_in, int *pregion);
 

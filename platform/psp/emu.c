@@ -445,9 +445,9 @@ static SceUID sound_sem = -1;
 
 static void writeSound(int len)
 {
-	// make sure there is (samples_block+2) free space in the buffer after
+	// make sure there is enough free space in the buffer after
 	// this frame, else the next frame may overwrite old stored samples.
-	if (samples_made - samples_done < samples_block * (SOUND_BLOCK_COUNT-2) - 4) {
+	if (samples_made - samples_done < samples_block * (SOUND_BLOCK_COUNT-2) - 8) {
 		sndBuffer_ptr += len / 2;
 		if (sndBuffer_ptr - sndBuffer > sizeof(sndBuffer)/2)
 			lprintf("snd ovrn %d %d\n", len, sndBuffer_ptr - sndBuffer);
@@ -759,9 +759,15 @@ void plat_status_msg_busy_next(const char *msg)
 {
 	plat_status_msg_clear();
 	pemu_finalize_frame("", msg);
+	// flip twice since our GU pipeline has one frame delay
+	plat_video_flip();
 	plat_video_flip();
 	emu_status_msg("");
 	reset_timing = 1;
+}
+
+void plat_status_msg_busy_done(void)
+{
 }
 
 /* clear status message area */
