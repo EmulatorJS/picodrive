@@ -353,6 +353,7 @@ struct PicoMisc
 #define PMS_HW_JAP	0x4   // japanese system
 #define PMS_HW_FM	0x8   // FM sound
 #define PMS_HW_TMS	0x10  // assume TMS9918
+#define PMS_HW_3D	0x20  // 3D glasses
 #define PMS_HW_FMUSED	0x80  // FM sound accessed
 
 #define PMS_MAP_AUTO	0
@@ -769,6 +770,7 @@ unsigned short cdc_host_r(int sub);
 
 // cd/cdd.c
 void cdd_reset(void);
+void cdd_play_audio(int index, int lba);
 int cdd_context_save(unsigned char *state);
 int cdd_context_load(unsigned char *state);
 int cdd_context_load_old(unsigned char *state);

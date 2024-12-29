@@ -181,7 +181,7 @@ void cdd_reset(void)
 }
 
 /* FIXME: use cdd_read_audio() instead */
-static void cdd_change_track(int index, int lba)
+void cdd_play_audio(int index, int lba)
 {
   int i, base, lba_offset, lb_len;
 
@@ -258,7 +258,7 @@ void cdd_seek(int index, int lba)
 #else
   else
   {
-    cdd_change_track(cdd.index, lba);
+    cdd_play_audio(cdd.index, lba);
   }
 #endif
 }
@@ -317,12 +317,20 @@ int cdd_load(const char *filename, int type)
   if (ret != 0)
     return ret;
 
+  if (type == CT_ISO) {
+    /* ISO format (2048 bytes data blocks) */
+    cdd.sectorSize = 2048;
+  } else {
+    /* audio or BIN format (2352 bytes data blocks) */
+    cdd.sectorSize = 2352;
+  }
+
   /* read first 16 bytes */
   pm_read(header, 0x10, cdd.toc.tracks[0].fd);
 
   /* look for valid CD image ID string */
-  if (memcmp("SEGADISCSYSTEM", header, 14))
-  {    
+  if (!Pico.romsize && memcmp("SEGADISCSYSTEM", header, 14))
+  {
     /* if not found, read next 16 bytes */
     pm_read(header, 0x10, cdd.toc.tracks[0].fd);
 
@@ -332,27 +340,16 @@ int cdd_load(const char *filename, int type)
       elprintf(EL_STATUS|EL_ANOMALY, "cd: bad cd image?");
       /* assume bin without security code */
     }
-
-    /* BIN format (2352 bytes data blocks) */
-    cdd.sectorSize = 2352;
-  }
-  else
-  {
-    /* ISO format (2048 bytes data blocks) */
-    cdd.sectorSize = 2048;
   }
 
-  ret = (type == CT_ISO ? 2048 : 2352);
-  if (ret != cdd.sectorSize)
-    elprintf(EL_STATUS|EL_ANOMALY, "cd: type detection mismatch");
   pm_sectorsize(cdd.sectorSize, cdd.toc.tracks[0].fd);
 
-  /* read CD image header + security code */
-  pm_read(header + 0x10, 0x200, cdd.toc.tracks[0].fd);
-
   /* Simulate audio tracks if none found */
-  if (cdd.toc.last == 1)
+  if (!Pico.romsize && cdd.toc.last == 1)
   {
+    /* read CD image header + security code */
+    pm_read(header + 0x10, 0x200, cdd.toc.tracks[0].fd);
+
     /* Some games require exact TOC infos */
     if (strstr(header + 0x180,"T-95035") != NULL)
     {
@@ -745,6 +742,12 @@ void cdd_update(void)
     cdc_decoder_update(header);
   }
 
+  if (Pico_mcd->m.state_flags & PCD_ST_CDD_CMD) {
+    /* pending delayed command */
+    cdd_process();
+    Pico_mcd->m.state_flags &= ~PCD_ST_CDD_CMD;
+  }
+
   /* drive latency */
   if (cdd.latency > 0)
   {
@@ -832,12 +835,6 @@ void cdd_update(void)
       Pico_mcd->s68k_regs[0x36+0] = 0x01;
     }
   }
-
-  if (Pico_mcd->m.state_flags & PCD_ST_CDD_CMD) {
-    /* pending delayed command */
-    cdd_process();
-    Pico_mcd->m.state_flags &= ~PCD_ST_CDD_CMD;
-  }
 }
 
 #define set_reg16(r, v) { \
@@ -894,6 +891,9 @@ void cdd_process(void)
       set_reg16(0x3c, 0x0000);
       set_reg16(0x3e, 0x0000);
       set_reg16(0x40, 0x000f);
+
+      /* reset to 1st track */
+      cdd_seek(0, 0);
       return;
     }
 
@@ -1049,11 +1049,8 @@ void cdd_process(void)
       /* get track index */
       while ((cdd.toc.tracks[index].end <= lba) && (index < cdd.toc.last)) index++;
 
-      /* block transfer always starts 3 blocks earlier */
-      lba -= 3;
-
-      /* seek to block */
-      cdd_seek(index, lba);
+      /* seek to block; playing always starts 3 blocks earlier */
+      cdd_seek(index, lba - 3);
 
       /* no audio track playing (yet) */
       Pico_mcd->s68k_regs[0x36+0] = 0x01;
@@ -1103,8 +1100,8 @@ void cdd_process(void)
       /* get track index */
       while ((cdd.toc.tracks[index].end <= lba) && (index < cdd.toc.last)) index++;
 
-      /* seek to block */
-      cdd_seek(index, lba);
+      /* seek to block; playing always starts 3 blocks earlier */
+      cdd_seek(index, lba - 3);
 
       /* no audio track playing */
       Pico_mcd->s68k_regs[0x36+0] = 0x01;
@@ -1120,12 +1117,6 @@ void cdd_process(void)
       /* update status (RS1-RS8 unchanged) */
       cdd.status = Pico_mcd->s68k_regs[0x38+0] = CD_READY;
 
-      /* seek delayed by max 2 blocks before the seek starts */
-      if (!(Pico_mcd->m.state_flags & PCD_ST_CDD_CMD)) {
-        Pico_mcd->m.state_flags |= PCD_ST_CDD_CMD;
-        return;
-      }
-
       /* no audio track playing */
       Pico_mcd->s68k_regs[0x36+0] = 0x01;
 
@@ -1134,17 +1125,6 @@ void cdd_process(void)
 
     case 0x07:  /* Resume */
     {
-      int lba = (cdd.lba < 4 ? 4 : cdd.lba);
-
-      /* CD drive latency */
-      if (!cdd.latency)
-      {
-        cdd.latency = 11;
-      }
-
-      /* always restart 4 blocks earlier */
-      cdd_seek(cdd.index, lba  - 4);
-
       /* update status (RS1-RS8 unchanged) */
       cdd.status = Pico_mcd->s68k_regs[0x38+0] = CD_PLAY;
       break;
