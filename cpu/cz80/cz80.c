@@ -220,8 +220,10 @@ void Cz80_Reset(cz80_struc *CPU)
 static inline unsigned char picodrive_read(unsigned short a)
 {
 	uptr v = z80_read_map[a >> Z80_MEM_SHIFT];
+#ifndef __EMSCRIPTEN__
 	if (map_flag_set(v))
 		return ((z80_read_f *)(v << 1))(a);
+#endif
 	return *(unsigned char *)((v << 1) + a);
 }
 #endif
