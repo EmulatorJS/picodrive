@@ -29,8 +29,49 @@ Further instructions can be found in `platform/base_readme.txt`.
 PicoDrive can use Storyware pages and pad overlays in png format in the same
 directory as the cartridge image. The selected page is displayed automatically
 if the pen is used on the storyware or pad. Details about how to correctly name
-the pages can be found in the *How to run Sega Pico games* section in
-`platform/base_readme.txt`.
+the pages can be found in `platform/base_readme.txt`.
+
+### Sega Pico Pen and Sega Mouse
+
+On all platforms with physical mouse support, PicoDrive can use real mouse
+input to emulate a Sega Mouse or the Pico Pen. A physical mouse can be operated
+in either a captured or uncaptured state, selectable via the `Capture mouse`
+hotkey. Mouse mode can be activated by setting `mouse` as the input device for
+one of the pads. It depends on the game as to which pad should be used for mouse
+input. More information is located in `platform/base_readme.txt`.
+
+### Sega Menacer and Light Phaser and Konami Justifier
+
+PicoDrive can use a physical mouse for light gun emulation on all platforms
+with mouse support. This can be activated by selecting an input device of
+either `light gun` or `justifier`. The `light gun` setting represents the Sega
+Menacer for the Mega Drive or the Light Phaser for the Master System; it may
+be attached to either pad input port. The `justifier` is only available on
+input 2. Supplementary information is provided in `platform/base_readme.txt`.
+
+### Sega Pico and SC-3000 Keyboards
+
+PicoDrive provides support for the Pico and SC-3000 keyboards. This can be
+enabled in the `Controls` configuration menu. Once enabled, keyboard input may
+be activated via the `Keyboard` emulator hotkey.
+
+Both physical keyboard support and a virtual keyboard overlay are available.
+Physical keyboards are assigned a default key mapping corresponding to an
+American PC layout, but the mapping can be redefined in the `Controls`
+configuration menu. Note that only 'unmodified' physical key presses (e.g.
+`a`, `1` etc) can be mapped to emulated keyboard input; special characters
+entered via modifier/meta keys (e.g. `Ctrl`, `Shift` etc) will not work.
+Additional information may be found in `platform/base_readme.txt`.
+
+### Sega SC-3000 Cassette Drive
+
+In addition to keyboard support, PicoDrive emulates the SC-3000 cassette tape
+drive which may be used in conjunction with BASIC cartridges. Tape emulation
+includes an automatic start/stop feature, where the tape is only advanced when
+it is accessed by the SC-3000; manual pausing of the tape is unnecessary for
+multi-part loading or saving.
+
+PicoDrive supports tape files in `WAV` and `bitstream` format.
 
 ### Gallery
 

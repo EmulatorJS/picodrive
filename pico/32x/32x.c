@@ -120,13 +120,15 @@ void Pico32xStartup(void)
     sh2_init(&ssh2, 1, &msh2);
     ssh2.irq_callback = sh2_irq_cb;
   }
+
   PicoMemSetup32x();
   p32x_pwm_ctl_changed();
-  p32x_timers_recalc();
+
+  Pico32x.regs[0] |= P32XS_ADEN;
 
   Pico32x.sh2_regs[0] = P32XS2_ADEN;
   if (Pico.m.ncart_in)
-    Pico32x.sh2_regs[0] |= P32XS_nCART;
+    Pico32x.sh2_regs[0] |= P32XS2_nCART;
 
   if (!Pico.m.pal)
     Pico32x.vdp_regs[0] |= P32XV_nPAL;
@@ -141,7 +143,9 @@ void Pico32xStartup(void)
 
 void Pico32xShutdown(void)
 {
+  elprintf(EL_STATUS|EL_32X, "32X shutdown");
   Pico32x.sh2_regs[0] &= ~P32XS2_ADEN;
+  Pico32x.regs[0] &= ~P32XS_ADEN;
 
   rendstatus_old = -1;
 
@@ -161,6 +165,7 @@ void p32x_reset_sh2s(void)
   sh2_reset(&ssh2);
   sh2_peripheral_reset(&msh2);
   sh2_peripheral_reset(&ssh2);
+  msh2.state = ssh2.state = 0;
 
   // if we don't have BIOS set, perform it's work here.
   // MSH2
@@ -213,6 +218,7 @@ void Pico32xInit(void)
 void PicoPower32x(void)
 {
   memset(&Pico32x, 0, sizeof(Pico32x));
+  memset(p32x_event_times, 0, sizeof(p32x_event_times));
 
   Pico32x.regs[0] = P32XS_REN|P32XS_nRES; // verified
   Pico32x.regs[0x10/2] = 0xffff;
@@ -235,39 +241,75 @@ void PicoUnload32x(void)
 void PicoReset32x(void)
 {
   if (PicoIn.AHW & PAHW_32X) {
-    p32x_trigger_irq(NULL, SekCyclesDone(), P32XI_VRES);
-    p32x_sh2_poll_event(msh2.poll_addr, &msh2, SH2_IDLE_STATES, SekCyclesDone());
-    p32x_sh2_poll_event(ssh2.poll_addr, &ssh2, SH2_IDLE_STATES, SekCyclesDone());
-    p32x_pwm_ctl_changed();
-    p32x_timers_recalc();
+    p32x_trigger_irq(NULL, Pico.t.m68c_aim, P32XI_VRES);
+    p32x_m68k_poll_event(0, -1);
+    p32x_sh2_poll_event(msh2.poll_addr, &msh2, SH2_IDLE_STATES, Pico.t.m68c_aim);
+    p32x_sh2_poll_event(ssh2.poll_addr, &ssh2, SH2_IDLE_STATES, Pico.t.m68c_aim);
   }
 }
 
-static void p32x_render_frame(void)
+static void Pico32xRenderSync(int lines)
 {
   if (Pico32xDrawMode != PDM32X_OFF && !PicoIn.skipFrame) {
-    int offs, lines;
+    int offs;
 
     pprof_start(draw);
 
-    offs = 8; lines = 224;
-    if (Pico.video.reg[1] & 8) {
+    offs = 8;
+    if (Pico.video.reg[1] & 8)
       offs = 0;
-      lines = 240;
-    }
 
     if ((Pico32x.vdp_regs[0] & P32XV_Mx) != 0 && // 32x not blanking
         (!(Pico.video.debug_p & PVD_KILL_32X)))
     {
       int md_bg = Pico.video.reg[7] & 0x3f;
 
-      // we draw full layer (not line-by-line)
-      PicoDraw32xLayer(offs, lines, md_bg);
+      // we draw lines up to the sync point (not line-by-line)
+      PicoDraw32xLayer(offs, lines-Pico32x.sync_line, md_bg);
     }
     else if (Pico32xDrawMode == PDM32X_BOTH)
-      PicoDraw32xLayerMdOnly(offs, lines);
+      PicoDraw32xLayerMdOnly(offs, lines-Pico32x.sync_line);
 
     pprof_end(draw);
+  }
+}
+
+void Pico32xDrawSync(SH2 *sh2)
+{
+  // the fast renderer isn't operating on a line-by-line base
+  if (sh2 && !(PicoIn.opt & POPT_ALT_RENDERER)) {
+    unsigned int cycle = (sh2 ? sh2_cycles_done_m68k(sh2) : SekCyclesDone());
+    int line = DIVQ32(cycle - Pico.t.m68c_frame_start, 488.5);
+
+    if (Pico32x.sync_line < line && line < (Pico.video.reg[1] & 8 ? 240 : 224)) {
+      // make sure the MD image is also sync'ed to this line for merging
+      PicoDrawSync(line, 0, 0);
+
+      // pfff... need to save and restore some persistent data for MD renderer
+      void *dest = Pico.est.DrawLineDest;
+      int incr = Pico.est.DrawLineDestIncr;
+      Pico32xRenderSync(line);
+      Pico.est.DrawLineDest = dest;
+      Pico.est.DrawLineDestIncr = incr;
+    }
+
+    // remember line we sync'ed to
+    Pico32x.sync_line = line;
+  }
+}
+
+static void p32x_render_frame(void)
+{
+  if (Pico32xDrawMode != PDM32X_OFF && !PicoIn.skipFrame) {
+    int lines;
+
+    pprof_start(draw);
+
+    lines = 224;
+    if (Pico.video.reg[1] & 8)
+      lines = 240;
+
+    Pico32xRenderSync(lines);
   }
 }
 
@@ -282,7 +324,7 @@ static void p32x_start_blank(void)
     Pico32xSwapDRAM(Pico32x.pending_fb ^ P32XV_FS);
   }
 
-  p32x_trigger_irq(NULL, Pico.t.m68c_aim, P32XI_VINT);
+  p32x_schedule_vint(NULL, Pico.t.m68c_aim);
   p32x_sh2_poll_event(msh2.poll_addr, &msh2, SH2_STATE_VPOLL, Pico.t.m68c_aim);
   p32x_sh2_poll_event(ssh2.poll_addr, &ssh2, SH2_STATE_VPOLL, Pico.t.m68c_aim);
 }
@@ -294,7 +336,7 @@ static void p32x_end_blank(void)
   if ((Pico32x.vdp_regs[0] & P32XV_Mx) != 0) // no forced blanking
     Pico32x.vdp_regs[0x0a/2] &= ~P32XV_PEN; // no palette access
   if (!(Pico32x.sh2_regs[0] & 0x80)) {
-    // NB must precede VInt per hw manual, min 4 SH-2 cycles to pass Mars Check
+    // TODO must be early by min 4 SH-2 cycles to pass Mars Check?
     Pico32x.hint_counter = (int)(-1.5*0x10);
     p32x_schedule_hint(NULL, Pico.t.m68c_aim);
   }
@@ -307,6 +349,7 @@ void p32x_schedule_hint(SH2 *sh2, unsigned int m68k_cycles)
 {
   // rather rough, 32x hint is useless in practice
   int after;
+
   if (!((Pico32x.sh2irq_mask[0] | Pico32x.sh2irq_mask[1]) & 4))
     return; // nobody cares
   if (!(Pico32x.sh2_regs[0] & 0x80) && (Pico.video.status & PVS_VB2))
@@ -319,6 +362,17 @@ void p32x_schedule_hint(SH2 *sh2, unsigned int m68k_cycles)
     p32x_event_schedule_sh2(sh2, P32X_EVENT_HINT, after);
   else
     p32x_event_schedule(m68k_cycles, P32X_EVENT_HINT, after);
+}
+
+void p32x_schedule_vint(SH2 *sh2, unsigned int m68k_cycles)
+{
+  // according to 32X hw manual, HInt and VInt are tied to HBLANK and VBLANK.
+  // Moreover, VBLANK is 27 px (224 mclk, 32 68k cycles) after HBLANK.
+  // TODO check if that matches HBLANK/VBLANK on the cartridge slot?
+  if (sh2 != NULL)
+    p32x_event_schedule_sh2(sh2, P32X_EVENT_VINT, 32);
+  else
+    p32x_event_schedule(m68k_cycles, P32X_EVENT_VINT, 32);
 }
 
 /* events */
@@ -335,6 +389,21 @@ static void hint_event(unsigned int now)
   p32x_schedule_hint(NULL, now);
 }
 
+static void vint_event(unsigned int now)
+{
+  p32x_trigger_irq(NULL, now, P32XI_VINT);
+}
+
+static void mtimer_event(unsigned int now)
+{
+  p32x_timer_irq(&msh2, now);
+}
+
+static void stimer_event(unsigned int now)
+{
+  p32x_timer_irq(&ssh2, now);
+}
+
 typedef void (event_cb)(unsigned int now);
 
 /* times are in m68k (7.6MHz) cycles */
@@ -344,6 +413,9 @@ static event_cb *p32x_event_cbs[P32X_EVENT_COUNT] = {
   p32x_pwm_irq_event, // P32X_EVENT_PWM
   fillend_event,      // P32X_EVENT_FILLEND
   hint_event,         // P32X_EVENT_HINT
+  vint_event,         // P32X_EVENT_VINT
+  mtimer_event,       // P32X_EVENT_MTIMER
+  stimer_event,       // P32X_EVENT_STIMER
 };
 
 // schedule event at some time 'after', in m68k clocks
@@ -364,6 +436,9 @@ void p32x_event_schedule_sh2(SH2 *sh2, enum p32x_event event, int after)
 {
   unsigned int now = sh2_cycles_done_m68k(sh2);
   int left_to_next;
+
+  if (sh2->state & SH2_IDLE_STATES)
+    now = SekCyclesDone();
 
   p32x_event_schedule(now, event, after);
 
@@ -441,8 +516,10 @@ void p32x_sync_other_sh2(SH2 *sh2, unsigned int m68k_target)
   int left_to_event;
   int m68k_cycles;
 
-  if (osh2->state & SH2_STATE_RUN)
+  if (osh2->state & SH2_STATE_RUN) {
+    sh2_end_run(sh2, 0);
     return;
+  }
 
   m68k_cycles = m68k_target - osh2->m68krcycles_done;
   if (m68k_cycles < 200)
@@ -470,7 +547,7 @@ void p32x_sync_other_sh2(SH2 *sh2, unsigned int m68k_target)
 }
 
 #define STEP_LS 24
-#define STEP_N 528 // at least one line (488)
+#define STEP_N 192 // NFL; TODO at least a scanline (489) for good performance?
 
 #define sync_sh2s_normal p32x_sync_sh2s
 //#define sync_sh2s_lockstep p32x_sync_sh2s
@@ -478,7 +555,7 @@ void p32x_sync_other_sh2(SH2 *sh2, unsigned int m68k_target)
 /* most timing is in 68k clock */
 void sync_sh2s_normal(unsigned int m68k_target)
 {
-  unsigned int now, target, next, timer_cycles;
+  unsigned int now, target, next;
   int cycles;
 
   elprintf(EL_32X, "sh2 sync to %u", m68k_target);
@@ -491,7 +568,6 @@ void sync_sh2s_normal(unsigned int m68k_target)
   now = msh2.m68krcycles_done;
   if (CYCLES_GT(now, ssh2.m68krcycles_done))
     now = ssh2.m68krcycles_done;
-  timer_cycles = now;
 
   pprof_start(m68k);
   while (CYCLES_GT(m68k_target, now))
@@ -548,20 +624,7 @@ void sync_sh2s_normal(unsigned int m68k_target)
         if (!(ssh2.state & SH2_IDLE_STATES)) 
           now = ssh2.m68krcycles_done;
       }
-      if (CYCLES_GT(now, timer_cycles+STEP_N)) {
-        if  (msh2.state & SH2_TIMER_RUN)
-          p32x_timer_do(&msh2, now - timer_cycles);
-        if  (ssh2.state & SH2_TIMER_RUN)
-          p32x_timer_do(&ssh2, now - timer_cycles);
-        timer_cycles = now;
-      }
     }
-
-    if  (msh2.state & SH2_TIMER_RUN)
-      p32x_timer_do(&msh2, now - timer_cycles);
-    if  (ssh2.state & SH2_TIMER_RUN)
-      p32x_timer_do(&ssh2, now - timer_cycles);
-    timer_cycles = now;
   }
   pprof_end_sub(m68k);
 
@@ -574,9 +637,6 @@ void sync_sh2s_normal(unsigned int m68k_target)
     if (CYCLES_GT(m68k_target, ssh2.m68krcycles_done))
       ssh2.m68krcycles_done = m68k_target;
   }
-
-  // everyone is in sync now
-  Pico32x.comm_dirty = 0;
 }
 
 void sync_sh2s_lockstep(unsigned int m68k_target)
@@ -616,9 +676,13 @@ void PicoFrame32x(void)
     pcd_prepare_frame();
 
   PicoFrameStart();
+  Pico32x.sync_line = 0;
   if (Pico32xDrawMode != PDM32X_BOTH)
     Pico.est.rendstatus |= PDRAW_SYNC_NEEDED;
   PicoFrameHints();
+
+  p32x_timer_do(&msh2, Pico.t.m68c_aim);
+  p32x_timer_do(&ssh2, Pico.t.m68c_aim);
 
   elprintf(EL_32X, "poll: %02x %02x %02x",
     Pico32x.emu_flags & 3, msh2.state, ssh2.state);
@@ -649,19 +713,25 @@ void Pico32xStateLoaded(int is_early)
 
   if (CYCLES_GE(sh2s[0].m68krcycles_done - Pico.t.m68c_aim, 500) ||
       CYCLES_GE(sh2s[1].m68krcycles_done - Pico.t.m68c_aim, 500))
-    sh2s[0].m68krcycles_done = sh2s[1].m68krcycles_done = SekCyclesDone();
-  p32x_update_irls(NULL, SekCyclesDone());
-  p32x_timers_recalc();
+    sh2s[0].m68krcycles_done = sh2s[1].m68krcycles_done = Pico.t.m68c_aim;
+  p32x_update_irls(NULL, Pico.t.m68c_aim);
+  sh2_peripheral_state_loaded();
   p32x_pwm_state_loaded();
-  p32x_run_events(SekCyclesDone());
+  p32x_run_events(Pico.t.m68c_aim);
+
+  // TODO wakeup CPUs for now. poll detection stuff must go to the save state!
+  p32x_m68k_poll_event(0, -1);
+  p32x_sh2_poll_event(msh2.poll_addr, &msh2, SH2_IDLE_STATES, msh2.m68krcycles_done);
+  p32x_sh2_poll_event(ssh2.poll_addr, &ssh2, SH2_IDLE_STATES, ssh2.m68krcycles_done);
 }
 
 void Pico32xPrepare(void)
 {
+  // fallback in case it was missing in saved config
   if (msh2.mult_m68k_to_sh2 == 0 || msh2.mult_sh2_to_m68k == 0)
     Pico32xSetClocks(PICO_MSH2_HZ, 0);
   if (ssh2.mult_m68k_to_sh2 == 0 || ssh2.mult_sh2_to_m68k == 0)
-    Pico32xSetClocks(0, PICO_MSH2_HZ);
+    Pico32xSetClocks(0, PICO_SSH2_HZ);
 
   sh2_execute_prepare(&msh2, PicoIn.opt & POPT_EN_DRC);
   sh2_execute_prepare(&ssh2, PicoIn.opt & POPT_EN_DRC);

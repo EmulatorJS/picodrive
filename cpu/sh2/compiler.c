@@ -4651,7 +4651,6 @@ static void REGPARM(2) *sh2_translate(SH2 *sh2, int tcache_id)
           FLUSH_CYCLES(sr);
           rcache_get_reg_arg(0, GET_Rn(), NULL);
           tmp = emit_memhandler_read(0);
-          sr  = rcache_get_reg(SHR_SR, RC_GR_RMW, NULL);
           emith_clr_t_cond(sr);
           emith_cmp_r_imm(tmp, 0);
           emith_set_t_cond(sr, DCOND_EQ);
@@ -5678,7 +5677,7 @@ static void sh2_smc_rm_blocks(u32 a, int len, int tcache_id, int free)
 
   if (!removed) {
     if (len <= 4)
-      dbg(2, "rm_blocks called @%08x, no work?", _a);
+      dbg(2, "rm_blocks called @%08x, no work?", a);
     return;
   }
 
@@ -5902,6 +5901,9 @@ static void bcache_stats(void)
 
 void sh2_drc_flush_all(void)
 {
+  if (block_tables[0] == NULL)
+    return;
+
   backtrace();
   state_dump();
   block_stats();

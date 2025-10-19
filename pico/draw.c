@@ -74,11 +74,11 @@ u32 VdpSATCache[2*128];  // VDP sprite cache (1st 32 sprite attr bits)
 #define PXMASKH     0x39ce39ce  // 0x3def3def, all but MSB for all colours
 #elif defined(USE_BGR565)
 #define PXCONV(t)   ((t & 0x000e000e)<< 1) | ((t & 0x00e000e0)<<3) | ((t & 0x0e000e00)<<4)
-#define PXMASKL     0x08610861  // 0x18e318e3
+#define PXMASKL     0x08410841  // 0x18e318e3
 #define PXMASKH     0x738e738e  // 0x7bef7bef
 #else // RGB565
 #define PXCONV(t)   ((t & 0x000e000e)<<12) | ((t & 0x00e000e0)<<3) | ((t & 0x0e000e00)>>7)
-#define PXMASKL     0x08610861  // 0x18e318e3
+#define PXMASKL     0x08410841  // 0x18e318e3
 #define PXMASKH     0x738e738e  // 0x7bef7bef
 #endif
 
@@ -419,7 +419,7 @@ void funcname(struct TileStrip *ts, int lflags, int cellskip)		\
   if (ts->hscroll & 0x0f) {						\
     int adj = ((ts->hscroll ^ dx) >> 3) & 1;				\
     cell -= adj + 1;							\
-    ts->cells -= adj;							\
+    ts->cells -= adj + 1;						\
     PicoMem.vsram[0x3e] = PicoMem.vsram[0x3f] = lflags >> 16;		\
   }									\
   cell+=cellskip;							\
@@ -600,7 +600,7 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
   struct PicoVideo *pvid = &est->Pico->video;
   int tilex,ty,nametab,code,oldcode=-1,blank=-1; // The tile we know is blank
   int yshift,ymask;
-  u32 pack;
+  u32 pack=0, pal=0;
   u32 *hc=NULL, lflags=0; // referenced in DrawTile
 
   yshift = 4, ymask = 0x7;
@@ -629,29 +629,30 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
   tend<<=1;
 
   // Draw tiles across screen:
-  if (!sh)
+  if (!sh || !prio)
   {
+    sh = (sh ? 0x80 : 0x00); // sh and low prio -> shadow
     for (; tilex < tend; tilex++)
     {
-      int dx, pal;
+      int dx;
 
       code = PicoMem.vram[nametab + tilex];
       if ((code>>15) != prio) {
         est->rendstatus |= PDRAW_WND_DIFF_PRIO;
         continue;
       }
+
       if (code==blank) continue;
-
       dx = 8 + (tilex << 3);
-
       DrawTile(~0,yshift,ymask,code,0);
     }
   }
   else
   {
+    sh = lflags; // sh and high prio -> no shadow (lflags to suppress warning)
     for (; tilex < tend; tilex++)
     {
-      int dx, pal;
+      int dx;
 
       code = PicoMem.vram[nametab + tilex];
       if((code>>15) != prio) {
@@ -659,18 +660,13 @@ static void DrawWindow(int tstart, int tend, int prio, int sh,
         continue;
       }
 
-      pal=((code>>9)&0x30);
+      // sh and high prio -> clear shadow
+      int *zb = (int *)(est->HighCol+8+(tilex<<3));
+      *zb++ &= 0x7f7f7f7f;
+      *zb   &= 0x7f7f7f7f;
 
-      if (prio) {
-        int *zb = (int *)(est->HighCol+8+(tilex<<3));
-        *zb++ &= 0x7f7f7f7f;
-        *zb   &= 0x7f7f7f7f;
-      } else {
-        pal |= 0x80;
-      }
       if(code==blank) continue;
       dx = 8 + (tilex << 3);
-
       DrawTile(~0,yshift,ymask,code,0);
     }
   }
@@ -1249,7 +1245,6 @@ static NOINLINE void ParseSprites(int max_lines, int limit)
       {
         unsigned char *p = &HighLnSpr[y][0];
         int cnt = p[0] & 0x7f;
-        if (p[1] & SPRL_MASKED) continue;               // masked?
 
         if (p[3] >= max_line_sprites) continue;         // sprite limit?
         p[3] ++;
@@ -1261,6 +1256,8 @@ static NOINLINE void ParseSprites(int max_lines, int limit)
           w = max_line_sprites*2 - p[2];
         }
         p[2] += w;
+
+        if (p[1] & SPRL_MASKED) continue;               // masked?
 
         if (sx == -0x78) {
           if (p[1] & (SPRL_HAVE_X|SPRL_TILE_OVFL))
@@ -1442,22 +1439,27 @@ static void PicoDoHighPal555_8bit(int sh, int line, struct PicoEState *est)
     // otherwise intensity difference between this and s/h will be wrong
     t = PXCONV(t);
     t |= (t >> 4) & PXMASKL;
+    // take into account that MegaDrive RGB output isn't linear, there is a larger
+    // step for 0->1 and 6->7. While the latter isn't obviously noticeable, the
+    // former is clearly visible (see color test in Knuckles Chaotix)
+    t |= ((t ^ PXMASKL) & (/*t>>4|*/t>>3|t>>2) & PXMASKL) << 1;
     dpal[i] = t;
   }
 
   // norm: xxx0, sh: 0xxx, hi: 0xxx + 7
   if (sh)
   {
-    // shadowed pixels
+    // normal and shadowed pixels
     for (i = 0; i < 0x40 / 2; i++) {
       dpal[0xc0/2 + i] = dpal[i];
-      dpal[0x80/2 + i] = (dpal[i] >> 1) & PXMASKH;
+      // take into account that MegaDrive RGB output isn't linear, see above
+      t = (dpal[i] >> 1) & PXMASKH;
+      dpal[0x80/2 + i] = t + ((t>>2|t>>1|t>>0) & (PXMASKL<<1));
     }
     // hilighted pixels
     for (i = 0; i < 0x40 / 2; i++) {
-      t = ((dpal[i] >> 1) & PXMASKH) + PXMASKH;
-      t |= (t >> 4) & PXMASKL;
-      dpal[0x40/2 + i] = t;
+      t = (dpal[i] >> 1) & PXMASKH;
+      dpal[0x40/2 + i] = t + PXMASKH + PXMASKL;
     }
   }
 }
@@ -1479,6 +1481,8 @@ void PicoDoHighPal555(int sh, int line, struct PicoEState *est)
     // otherwise intensity difference between this and s/h will be wrong
     t = PXCONV(t);
     t |= (t >> 4) & PXMASKL;
+    // take into account that MegaDrive RGB output isn't linear, see above
+    t |= ((t ^ PXMASKL) & (/*t>>4|*/t>>3|t>>2) & PXMASKL) << 1;
     dpal[i] = dpal[0xc0/2 + i] = t;
   }
 
@@ -1486,13 +1490,15 @@ void PicoDoHighPal555(int sh, int line, struct PicoEState *est)
   if (sh)
   {
     // shadowed pixels
-    for (i = 0; i < 0x40 / 2; i++)
-      dpal[0x80/2 + i] = (dpal[i] >> 1) & PXMASKH;
+    for (i = 0; i < 0x40 / 2; i++) {
+      // take into account that MegaDrive RGB output isn't linear, see above
+      t = (dpal[i] >> 1) & PXMASKH;
+      dpal[0x80/2 + i] = t + ((t>>2|t>>1|t>>0) & (PXMASKL<<1));
+    }
     // hilighted pixels
     for (i = 0; i < 0x40 / 2; i++) {
-      t = ((dpal[i] >> 1) & PXMASKH) + PXMASKH;
-      t |= (t >> 4) & PXMASKL;
-      dpal[0x40/2 + i] = t;
+      t = (dpal[i] >> 1) & PXMASKH;
+      dpal[0x40/2 + i] = t + PXMASKH + PXMASKL;
     }
   }
 }
@@ -1744,17 +1750,17 @@ PICO_INTERNAL void PicoFrameStart(void)
   if (PicoIn.AHW & PAHW_32X) // H32 upscaling, before mixing in 32X layer
     est->rendstatus = (*est->PicoOpt & POPT_ALT_RENDERER) ?
                 PDRAW_BORDER_32 : PDRAW_32X_SCALE|PDRAW_SOFTSCALE;
-  else if (!(PicoIn.opt & POPT_DIS_32C_BORDER))
+  else if (!(*est->PicoOpt & POPT_DIS_32C_BORDER))
     est->rendstatus |= PDRAW_BORDER_32;
 
-  if ((PicoIn.opt & POPT_EN_SOFTSCALE) && !(*est->PicoOpt & POPT_ALT_RENDERER))
+  if ((*est->PicoOpt & POPT_EN_SOFTSCALE) && !(*est->PicoOpt & POPT_ALT_RENDERER))
     est->rendstatus |= PDRAW_SOFTSCALE;
 
   if ((est->Pico->video.reg[12] & 6) == 6)
     est->rendstatus |= PDRAW_INTERLACE; // interlace mode
   if (!(est->Pico->video.reg[12] & 1)) {
     est->rendstatus |= PDRAW_32_COLS;
-    if (!(est->rendstatus & PDRAW_SOFTSCALE)) {
+    if (!(est->rendstatus & PDRAW_SOFTSCALE) && !(PicoIn.AHW & PAHW_32X)) {
       columns = 256;
       coffs = 32;
     }

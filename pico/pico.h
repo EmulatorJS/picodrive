@@ -77,6 +77,7 @@ extern void *p32x_bios_g, *p32x_bios_m, *p32x_bios_s;
 #define POPT_DIS_FM_SSGEG   (1<<23)
 #define POPT_EN_FM_DAC      (1<<24) //x00 0000
 #define POPT_EN_FM_FILTER   (1<<25)
+#define POPT_EN_KBD         (1<<26)
 
 #define PAHW_MCD    (1<<0)
 #define PAHW_32X    (1<<1)
@@ -107,9 +108,19 @@ typedef struct PicoInterface
 {
 	unsigned int opt; // POPT_* bitfield
 
-	unsigned short pad[4];     // Joypads, format is MXYZ SACB RLDU
-	unsigned short padInt[4];  // internal copy
-	unsigned short AHW;        // active addon hardware: PAHW_* bitfield
+	unsigned short pad[4];         // Joypads, format is MXYZ SACB RLDU
+	unsigned short padInt[4];      // internal copy
+	unsigned short AHW;            // active addon hardware: PAHW_* bitfield
+
+	unsigned short kbd;            // SC-3000 or Pico Keyboard
+	short mouse[4];                // x,y mouse coordinates
+	short mouseInt[4];             // internal copy
+	short gunx, guny;              // light gun offsets
+
+	unsigned short quirks;         // game-specific quirks: PQUIRK_*
+	unsigned short overclockM68k;  // overclock the emulated 68k, in %
+
+	unsigned short filter;         // softscale filter type
 
 	unsigned short skipFrame;      // skip rendering frame, but still do sound (if enabled) and emulation stuff
 	unsigned short regionOverride; // override the region detection 0: auto, 1: Japan NTSC, 2: Japan PAL, 4: US, 8: Europe
@@ -117,11 +128,6 @@ typedef struct PicoInterface
 	unsigned int hwSelect;         // hardware preselected via option menu
 	unsigned int mapper;           // mapper selection for SMS, 0 = auto
 	unsigned int tmsPalette;       // palette used by SMS in TMS graphic modes
-
-	unsigned short quirks;         // game-specific quirks: PQUIRK_*
-	unsigned short overclockM68k;  // overclock the emulated 68k, in %
-
-	unsigned short filter;         // softscale filter type
 
 	int sndRate;                   // rate in Hz
 	int sndFilterAlpha;            // Low pass sound filter alpha (Q16)
@@ -151,6 +157,33 @@ struct PicoEState;
 
 // pico.c
 #define XPCM_BUFFER_SIZE 64
+enum {
+  PKEY_RELEASED = 0,
+  PKEY_DOWN,
+  PKEY_UP,
+};
+enum {
+  PSHIFT_RELEASED = 0,
+  PSHIFT_DOWN,
+  PSHIFT_UP_HELD_DOWN,
+  PSHIFT_RELEASED_HELD_DOWN,
+  PSHIFT_UP
+};
+typedef struct
+{
+    uint8_t i;
+    uint8_t mode;
+    uint8_t neg;
+    uint8_t has_read;
+    uint8_t caps_lock;
+    uint8_t has_caps_lock;
+    uint32_t mem;
+    uint64_t start_time_keydown;
+    uint64_t time_keydown;
+    uint8_t key_state;
+    uint8_t shift_state;
+    uint8_t active;
+} picohw_kb;
 typedef struct
 {
 	int pen_pos[2];
@@ -160,6 +193,7 @@ typedef struct
 	unsigned int reserved[3];
 	unsigned char xpcm_buffer[XPCM_BUFFER_SIZE+4];
 	unsigned char *xpcm_ptr;
+	picohw_kb kb;
 } picohw_state;
 extern picohw_state PicoPicohw;
 
@@ -329,8 +363,12 @@ enum input_device {
   PICO_INPUT_NOTHING,
   PICO_INPUT_PAD_3BTN,
   PICO_INPUT_PAD_6BTN,
+  PICO_INPUT_MOUSE,
+  PICO_INPUT_LIGHT_GUN,
+  PICO_INPUT_JUSTIFIER,
   PICO_INPUT_PAD_TEAM,
   PICO_INPUT_PAD_4WAY,
+  PICO_INPUT_COUNT
 };
 void PicoSetInputDevice(int port, enum input_device device);
 

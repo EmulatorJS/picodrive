@@ -26,7 +26,11 @@ static void *shadow_fb;
 static int shadow_size;
 static struct area { int w, h; } area;
 
+static int resized;
+
 static struct in_pdata in_sdl_platform_data;
+
+static int hide_cursor;
 
 static int sound_rates[] = { 8000, 11025, 16000, 22050, 32000, 44100, 53000, -1 };
 struct plat_target plat_target = { .sound_rates = sound_rates };
@@ -66,7 +70,8 @@ int plat_target_init(void)
 		FILE *f = fopen("/proc/device-tree/compatible", "r");
 		if (f) {
 			char buf[10];
-			int c = fread(buf, 1, sizeof(buf), f);
+			int c = fread(buf, 1, sizeof(buf)-1, f);
+			buf[c] = '\0';
 			if (strncmp(buf, "gcw,", 4) == 0)
 				plat_device = "gcw0";
 		}
@@ -87,98 +92,98 @@ static struct uyvy { uint32_t y:8; uint32_t vyu:24; } yuv_uyvy[65536];
 
 void bgr_to_uyvy_init(void)
 {
-  int i, v;
+	int i, v;
 
-  /* init yuv converter:
-    y0 = (int)((0.299f * r0) + (0.587f * g0) + (0.114f * b0));
-    y1 = (int)((0.299f * r1) + (0.587f * g1) + (0.114f * b1));
-    u = (int)(8 * 0.565f * (b0 - y0)) + 128;
-    v = (int)(8 * 0.713f * (r0 - y0)) + 128;
-  */
-  for (i = 0; i < 32; i++) {
-    yuv_ry[i] = (int)(0.299f * i * 65536.0f + 0.5f);
-    yuv_gy[i] = (int)(0.587f * i * 65536.0f + 0.5f);
-    yuv_by[i] = (int)(0.114f * i * 65536.0f + 0.5f);
-  }
-  for (i = -32; i < 32; i++) {
-    v = (int)(8 * 0.565f * i) + 128;
-    if (v < 0)
-      v = 0;
-    if (v > 255)
-      v = 255;
-    yuv_u[i + 32] = v;
-    v = (int)(8 * 0.713f * i) + 128;
-    if (v < 0)
-      v = 0;
-    if (v > 255)
-      v = 255;
-    yuv_v[i + 32] = v;
-  }
-  // valid Y range seems to be 16..235
-  for (i = 0; i < 256; i++) {
-    yuv_y[i] = 16 + 219 * i / 32;
-  }
-  // everything combined into one large array for speed
-  for (i = 0; i < 65536; i++) {
-     int r = (i >> 11) & 0x1f, g = (i >> 6) & 0x1f, b = (i >> 0) & 0x1f;
-     int y = (yuv_ry[r] + yuv_gy[g] + yuv_by[b]) >> 16;
-     yuv_uyvy[i].y = yuv_y[y];
+	/* init yuv converter:
+	    y0 = (int)((0.299f * r0) + (0.587f * g0) + (0.114f * b0));
+	    y1 = (int)((0.299f * r1) + (0.587f * g1) + (0.114f * b1));
+	    u = (int)(8 * 0.565f * (b0 - y0)) + 128;
+	    v = (int)(8 * 0.713f * (r0 - y0)) + 128;
+	*/
+	for (i = 0; i < 32; i++) {
+		yuv_ry[i] = (int)(0.299f * i * 65536.0f + 0.5f);
+		yuv_gy[i] = (int)(0.587f * i * 65536.0f + 0.5f);
+		yuv_by[i] = (int)(0.114f * i * 65536.0f + 0.5f);
+	}
+	for (i = -32; i < 32; i++) {
+		v = (int)(8 * 0.565f * i) + 128;
+		if (v < 0)
+			v = 0;
+		if (v > 255)
+			v = 255;
+		yuv_u[i + 32] = v;
+		v = (int)(8 * 0.713f * i) + 128;
+		if (v < 0)
+			v = 0;
+		if (v > 255)
+			v = 255;
+		yuv_v[i + 32] = v;
+	}
+	// valid Y range seems to be 16..235
+	for (i = 0; i < 256; i++) {
+		yuv_y[i] = 16 + 219 * i / 32;
+	}
+	// everything combined into one large array for speed
+	for (i = 0; i < 65536; i++) {
+		int r = (i >> 11) & 0x1f, g = (i >> 6) & 0x1f, b = (i >> 0) & 0x1f;
+		int y = (yuv_ry[r] + yuv_gy[g] + yuv_by[b]) >> 16;
+		yuv_uyvy[i].y = yuv_y[y];
 #if CPU_IS_LE
-     yuv_uyvy[i].vyu = (yuv_v[r-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[b-y + 32];
+		yuv_uyvy[i].vyu = (yuv_v[r-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[b-y + 32];
 #else
-     yuv_uyvy[i].vyu = (yuv_v[b-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[r-y + 32];
+		yuv_uyvy[i].vyu = (yuv_v[b-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[r-y + 32];
 #endif
-  }
+	}
 }
 
 void rgb565_to_uyvy(void *d, const void *s, int w, int h, int pitch, int dpitch, int x2)
 {
-  uint32_t *dst = d;
-  const uint16_t *src = s;
-  int i;
+	uint32_t *dst = d;
+	const uint16_t *src = s;
+	int i;
 
-  if (x2) while (h--) {
-    for (i = w; i >= 4; src += 4, dst += 4, i -= 4)
-    {
-      struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
-      struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
+	if (x2) while (h--) {
+		for (i = w; i >= 4; src += 4, dst += 4, i -= 4)
+		{
+			struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
+			struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
 #if CPU_IS_LE
-      dst[0] = (uyvy0->y << 24) | uyvy0->vyu;
-      dst[1] = (uyvy1->y << 24) | uyvy1->vyu;
-      dst[2] = (uyvy2->y << 24) | uyvy2->vyu;
-      dst[3] = (uyvy3->y << 24) | uyvy3->vyu;
+			dst[0] = (uyvy0->y << 24) | uyvy0->vyu;
+			dst[1] = (uyvy1->y << 24) | uyvy1->vyu;
+			dst[2] = (uyvy2->y << 24) | uyvy2->vyu;
+			dst[3] = (uyvy3->y << 24) | uyvy3->vyu;
 #else
-      dst[0] = uyvy0->y | (uyvy0->vyu << 8);
-      dst[1] = uyvy1->y | (uyvy1->vyu << 8);
-      dst[2] = uyvy2->y | (uyvy2->vyu << 8);
-      dst[3] = uyvy3->y | (uyvy3->vyu << 8);
+			dst[0] = uyvy0->y | (uyvy0->vyu << 8);
+			dst[1] = uyvy1->y | (uyvy1->vyu << 8);
+			dst[2] = uyvy2->y | (uyvy2->vyu << 8);
+			dst[3] = uyvy3->y | (uyvy3->vyu << 8);
 #endif
-    }
-    src += pitch - (w-i);
-    dst += (dpitch - 2*(w-i))/2;
-  } else while (h--) {
-    for (i = w; i >= 4; src += 4, dst += 2, i -= 4)
-    {
-      struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
-      struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
+		}
+		src += pitch - (w-i);
+		dst += (dpitch - 2*(w-i))/2;
+	} else while (h--) {
+		for (i = w; i >= 4; src += 4, dst += 2, i -= 4)
+		{
+			struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
+			struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
 #if CPU_IS_LE
-      dst[0] = (uyvy1->y << 24) | uyvy0->vyu;
-      dst[1] = (uyvy3->y << 24) | uyvy2->vyu;
+			dst[0] = (uyvy1->y << 24) | uyvy0->vyu;
+			dst[1] = (uyvy3->y << 24) | uyvy2->vyu;
 #else
-      dst[0] = uyvy1->y | (uyvy0->vyu << 8);
-      dst[1] = uyvy3->y | (uyvy2->vyu << 8);
+			dst[0] = uyvy1->y | (uyvy0->vyu << 8);
+			dst[1] = uyvy3->y | (uyvy2->vyu << 8);
 #endif
-    }
-    src += pitch - (w-i);
-    dst += (dpitch - (w-i))/2;
-  }
+		}
+		src += pitch - (w-i);
+		dst += (dpitch - (w-i))/2;
+	}
 }
 
 void copy_intscale(void *dst, int w, int h, int pp, void *src, int sw, int sh, int spp)
 {
-	int xf = w / sw, yf = h / sh;
-	int f = xf < yf ? xf : yf, xs = f * sw, ys = f * sh;
-	int x = (w - xs)/2, y = (h - ys)/2;
+	int xf = w / sw, yf = h / sh, f = xf < yf ? xf : yf;
+	int wf = f * sw, hf = f * sh;
+	int x = (w - wf)/2, y = (h - hf)/2;
 	uint16_t *p = (uint16_t *)dst;
 	uint16_t *q = (uint16_t *)src;
 
@@ -189,10 +194,10 @@ void copy_intscale(void *dst, int w, int h, int pp, void *src, int sw, int sh, i
 		for (j = 0; j < sw; j++, q++)
 			for (l = 0; l < f; l++)
 				*p++ = *q;
-		p += pp - xs;
+		p += pp - wf;
 		q += spp - sw;
 		for (k = 1; k < f; k++) {
-			memcpy(p, p-pp, w*2);
+			memcpy(p, p-pp, wf*2);
 			p += pp;
 		}
 	}
@@ -202,9 +207,15 @@ static int clear_buf_cnt, clear_stat_cnt;
 
 static void resize_buffers(void)
 {
+	// update pitch as it is needed for resizing, and the menu bg scaler
+	if (plat_sdl_overlay || plat_sdl_gl_active)
+		g_menuscreen_pp = g_menuscreen_w;
+	else
+		g_menuscreen_pp = plat_sdl_screen->pitch / 2;
+
 	// make sure the shadow buffers are big enough in case of resize
-	if (shadow_size < g_menuscreen_w * g_menuscreen_h * 2) {
-		shadow_size = g_menuscreen_w * g_menuscreen_h * 2;
+	if (shadow_size < g_menuscreen_pp * g_menuscreen_h * 2) {
+		shadow_size = g_menuscreen_pp * g_menuscreen_h * 2;
 		shadow_fb = realloc(shadow_fb, shadow_size);
 		g_menubg_ptr = realloc(g_menubg_ptr, shadow_size);
 	}
@@ -212,10 +223,11 @@ static void resize_buffers(void)
 
 void plat_video_set_size(int w, int h)
 {
-	if ((plat_sdl_overlay || plat_sdl_gl_active) &&
-            (w != g_screen_width || h != g_screen_height)) {
-		// scale to the window, but mind aspect ratio (scaled to 4:3)
-		if (g_menuscreen_w * /*h*/w*3/4 >= g_menuscreen_h * w)
+	if ((plat_sdl_overlay || plat_sdl_gl_active || !plat_sdl_is_windowed()) &&
+			w <= 320 && h <= 240) {
+		// scale to the window, but mind aspect ratio (scaled to 4:3):
+		// w *= win_aspect / 4:3_aspect or h *= 4:3_aspect / win_aspect
+		if (g_menuscreen_w * 3/4 >= g_menuscreen_h)
 			w = (w * 3 * g_menuscreen_w/g_menuscreen_h)/4 & ~1;
 		else
 			h = (h * 4 * g_menuscreen_h/g_menuscreen_w)/3 & ~1;
@@ -231,13 +243,21 @@ void plat_video_set_size(int w, int h)
 				area = (struct area) { g_screen_width,g_screen_height };
 				plat_sdl_change_video_mode(g_screen_width, g_screen_height, 0);
 			}
+			plat_sdl_gl_scaling(currentConfig.filter);
 		}
-		if (plat_sdl_overlay || plat_sdl_gl_active ||
-		    plat_sdl_screen->w >= 320*2 || plat_sdl_screen->h >= 240*2) {
-			// use shadow buffer for overlays and sw integer scaling
+		if (plat_sdl_overlay || plat_sdl_gl_active) {
+			// use shadow buffer for overlays
 			g_screen_width = area.w;
 			g_screen_height = area.h;
 			g_screen_ppitch = area.w;
+			g_screen_ptr = shadow_fb;
+		} else if (plat_sdl_is_windowed() &&
+		    (plat_sdl_screen->w >= 320*2 || plat_sdl_screen->h >= 240*2 ||
+		     plat_sdl_screen->w < 320 || plat_sdl_screen->h < 240)) {
+			// shadow buffer for integer scaling
+			g_screen_width = 320;
+			g_screen_height = 240;
+			g_screen_ppitch = 320;
 			g_screen_ptr = shadow_fb;
 		} else {
 			// unscaled SDL window buffer can be used directly
@@ -259,8 +279,6 @@ void plat_video_set_shadow(int w, int h)
 
 void plat_video_flip(void)
 {
-	resize_buffers();
-
 	if (plat_sdl_overlay != NULL) {
 		SDL_Rect dstrect =
 			{ 0, 0, plat_sdl_screen->w, plat_sdl_screen->h };
@@ -281,13 +299,11 @@ void plat_video_flip(void)
 		if (copy)
 			copy_intscale(plat_sdl_screen->pixels, plat_sdl_screen->w,
 				plat_sdl_screen->h, plat_sdl_screen->pitch/2,
-				shadow_fb, area.w, area.h, area.w);
+				shadow_fb, g_screen_width, g_screen_height, g_screen_ppitch);
 
 		if (SDL_MUSTLOCK(plat_sdl_screen))
 			SDL_UnlockSurface(plat_sdl_screen);
 		SDL_Flip(plat_sdl_screen);
-		if (SDL_MUSTLOCK(plat_sdl_screen))
-			SDL_LockSurface(plat_sdl_screen);
 
 		if (!copy) {
 			g_screen_ppitch = plat_sdl_screen->pitch/2;
@@ -295,19 +311,29 @@ void plat_video_flip(void)
 			plat_video_set_buffer(g_screen_ptr);
 		}
 
+		if (SDL_MUSTLOCK(plat_sdl_screen))
+			SDL_LockSurface(plat_sdl_screen);
+
 		if (clear_buf_cnt) {
-			memset(g_screen_ptr, 0, plat_sdl_screen->pitch*plat_sdl_screen->h);
+			memset(plat_sdl_screen->pixels, 0, plat_sdl_screen->pitch*plat_sdl_screen->h);
 			clear_buf_cnt--;
 		}
 	}
 
-	// for overlay/gl modes buffer ptr may change on resize
-	if ((plat_sdl_overlay || plat_sdl_gl_active) &&
-	    (g_screen_ptr != shadow_fb || g_screen_ppitch != g_screen_width)) {
-		g_screen_ppitch = g_screen_width;
-		g_screen_ptr = shadow_fb;
+	// take over resized settings for the physical SDL surface
+	if (resized && plat_sdl_is_windowed() &&
+	    SDL_WM_GrabInput(SDL_GRAB_ON) == SDL_GRAB_ON) {
+		plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 1);
+		SDL_WM_GrabInput(SDL_GRAB_OFF);
+		resize_buffers();
+
+		// force upper layer to use new dimensions
+		plat_video_set_shadow(g_screen_width, g_screen_height);
 		plat_video_set_buffer(g_screen_ptr);
+		rendstatus_old = -1;
+		resized = 0;
 	}
+
 	if (clear_stat_cnt) {
 		unsigned short *d = (unsigned short *)g_screen_ptr + g_screen_ppitch * g_screen_height;
 		int l = g_screen_ppitch * 8;
@@ -327,32 +353,38 @@ void plat_video_clear_status(void)
 
 void plat_video_clear_buffers(void)
 {
-	if (plat_sdl_overlay || plat_sdl_gl_active ||
-	    plat_sdl_screen->w >= 320*2 || plat_sdl_screen->h >= 240*2)
-		memset(shadow_fb, 0, g_menuscreen_w * g_menuscreen_h * 2);
-	else {
-		memset(g_screen_ptr, 0, plat_sdl_screen->pitch*plat_sdl_screen->h);
-		clear_buf_cnt = 3; // do it thrice in case of triple buffering
-	}
+	int count = g_menuscreen_w * g_menuscreen_h;
+	if (count < area.w * area.h) count = area.w * area.h;
+	memset(shadow_fb, 0, count * 2);
+	if (plat_sdl_overlay)
+		plat_sdl_overlay_clear();
+	memset(plat_sdl_screen->pixels, 0, plat_sdl_screen->pitch*plat_sdl_screen->h);
+	clear_buf_cnt = 3; // do it thrice in case of triple buffering
 }
 
 void plat_video_menu_update(void)
 {
-	// w/h might have changed due to resizing
-	plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 1);
-	resize_buffers();
+	// WM may grab input while resizing the window; our own window resizing
+	// is only safe if the WM isn't active anymore, so try to grab input.
+	if (plat_sdl_is_windowed() && SDL_WM_GrabInput(SDL_GRAB_ON) == SDL_GRAB_ON) {
+		// w/h might change in resize callback
+		int w, h;
+		do {
+			w = g_menuscreen_w, h = g_menuscreen_h;
+			plat_sdl_change_video_mode(w, h, 1);
+		} while (w != g_menuscreen_w || h != g_menuscreen_h);
+		plat_sdl_gl_scaling(currentConfig.filter);
+		SDL_WM_GrabInput(SDL_GRAB_OFF);
+	}
 
-	// update pitch as it is needed by the menu bg scaler
-	if (plat_sdl_overlay || plat_sdl_gl_active)
-		g_menuscreen_pp = g_menuscreen_w;
-	else
-		g_menuscreen_pp = plat_sdl_screen->pitch / 2;
+	resize_buffers();
 }
 
 void plat_video_menu_enter(int is_rom_loaded)
 {
 	if (SDL_MUSTLOCK(plat_sdl_screen))
 		SDL_UnlockSurface(plat_sdl_screen);
+	plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 1);
 }
 
 void plat_video_menu_begin(void)
@@ -401,70 +433,78 @@ void plat_video_menu_leave(void)
 
 void plat_video_loop_prepare(void)
 {
+	int w = g_menuscreen_w, h = g_menuscreen_h;
+
 	// take over any new vout settings
-	plat_sdl_change_video_mode(0, 0, 0);
-	area.w = g_menuscreen_w, area.h = g_menuscreen_h;
-	resize_buffers();
+	area = (struct area) { 0, 0 };
+//	plat_sdl_change_video_mode(0, 0, 0);
 
 	// switch over to scaled output if available, but keep the aspect ratio
-	if (plat_sdl_overlay || plat_sdl_gl_active) {
-		if (g_menuscreen_w * 240 >= g_menuscreen_h * 320) {
-			g_screen_width = (240 * g_menuscreen_w/g_menuscreen_h) & ~1;
-			g_screen_height= 240;
-		} else {
-			g_screen_width = 320;
-			g_screen_height= (320 * g_menuscreen_h/g_menuscreen_w) & ~1;
-		}
-		g_screen_ppitch = g_screen_width;
-		g_screen_ptr = shadow_fb;
-		plat_video_set_size(g_screen_width, g_screen_height);
-	}
-	else {
-		if (plat_sdl_is_windowed() &&
-                    (plat_sdl_screen->w >= 320*2 || plat_sdl_screen->h >= 240*2)) {
-			// shadow buffer for integer scaling
-			g_screen_width = 320;
-			g_screen_height = 240;
-			g_screen_ppitch = 320;
-			g_screen_ptr = shadow_fb;
-		} else {
-			// no scaling needed, use screen buffer directly
-			g_screen_width = plat_sdl_screen->w;
-			g_screen_height = plat_sdl_screen->h;
-			g_screen_ppitch = plat_sdl_screen->pitch/2;
-			g_screen_ptr = plat_sdl_screen->pixels;
-		}
-		plat_video_set_size(g_screen_width, g_screen_height);
+	if (plat_sdl_overlay || plat_sdl_gl_active)
+		w = 320, h = 240;
 
+	g_screen_width = w, g_screen_height = h;
+	plat_video_set_size(w, h);
+
+	if (!(plat_sdl_overlay || plat_sdl_gl_active))
 		if (SDL_MUSTLOCK(plat_sdl_screen))
 			SDL_LockSurface(plat_sdl_screen);
-	}
 
 	plat_video_set_buffer(g_screen_ptr);
+}
+
+void plat_show_cursor(int on)
+{
+	SDL_ShowCursor(on && !hide_cursor);
+}
+
+int plat_grab_cursor(int on)
+{
+	SDL_WM_GrabInput(on ? SDL_GRAB_ON : SDL_GRAB_OFF);
+	return on;
+}
+
+int plat_has_wm(void)
+{
+	return plat_sdl_is_windowed();
+}
+
+void plat_set_window(int w, int h)
+{
+	g_menuscreen_w = w;
+	g_menuscreen_h = h;
+	resized = 1;
 }
 
 static void plat_sdl_resize(int w, int h)
 {
 	// take over new settings
 #if defined(__OPENDINGUX__)
-	if (currentConfig.vscaling != EOPT_SCALE_HW &&
-	    plat_sdl_screen->w == 320 && plat_sdl_screen->h == 480) {
-		g_menuscreen_h = 240;
-		g_menuscreen_w = 320;
-	} else
+	if (currentConfig.vscaling != EOPT_SCALE_HW && w == 320 && h == 480)
+		h = 240;
 #endif
-	{
-		g_menuscreen_h = plat_sdl_screen->h;
-		g_menuscreen_w = plat_sdl_screen->w;
+	if (g_menuscreen_w != (w & ~3) || g_menuscreen_h != (h & ~3)){
+		g_menuscreen_h = h & ~3;
+		g_menuscreen_w = w & ~3;
+		resized = 1;
 	}
-	resize_buffers();
-	rendstatus_old = -1;
 }
 
 static void plat_sdl_quit(void)
 {
 	// for now..
 	exit(1);
+}
+
+static void plat_sdl_handler(void *event_)
+{
+  SDL_Event *event = event_;
+
+  if (event->type == SDL_VIDEORESIZE)
+    // handle resize here to avoid the internal plat_sdl_change_video_mode
+    plat_sdl_resize(event->resize.w, event->resize.h);
+  else
+    plat_sdl_event_handler(event_);
 }
 
 void plat_init(void)
@@ -474,15 +514,21 @@ void plat_init(void)
 	ret = plat_sdl_init();
 	if (ret != 0)
 		exit(1);
+
 #if defined(__OPENDINGUX__)
 	// opendingux on JZ47x0 may falsely report a HW overlay, fix to window
 	plat_target.vout_method = 0;
+#elif !defined(__MIYOO__) && !defined(__RETROFW__) && !defined(__DINGUX__)
+	if (! plat_sdl_is_windowed())
 #endif
+	{
+		hide_cursor = 1;
+		SDL_ShowCursor(0);
+	}
 
 	plat_sdl_quit_cb = plat_sdl_quit;
-	plat_sdl_resize_cb = plat_sdl_resize;
+//	plat_sdl_resize_cb = plat_sdl_resize;
 
-	SDL_ShowCursor(0);
 	SDL_WM_SetCaption("PicoDrive " VERSION, NULL);
 
 	g_menuscreen_pp = g_menuscreen_w;
@@ -511,8 +557,16 @@ void plat_init(void)
 	in_sdl_platform_data.jmap_size = in_sdl_joy_map_sz,
 	in_sdl_platform_data.joy_map = in_sdl_joy_map,
 	in_sdl_platform_data.key_names = in_sdl_key_names,
-	in_sdl_init(&in_sdl_platform_data, plat_sdl_event_handler);
+	in_sdl_platform_data.kbd_map = in_sdl_kbd_map,
+	in_sdl_init(&in_sdl_platform_data, plat_sdl_handler);
 	in_probe();
+
+	// create an artificial resize event to initialize mouse scaling
+	static SDL_Event ev;
+	ev.resize.type = SDL_VIDEORESIZE;
+	ev.resize.w = g_menuscreen_w;
+	ev.resize.h = g_menuscreen_h;
+	SDL_PeepEvents(&ev, 1, SDL_ADDEVENT, SDL_ALLEVENTS);
 
 	bgr_to_uyvy_init();
 	linux_menu_init();

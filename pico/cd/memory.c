@@ -101,7 +101,7 @@ u32 pcd_stopwatch_read(int sub)
 {
   // ugh... stopwatch runs 384 cycles per step, divide by mult with inverse
   u32 d = sub ? SekCyclesDoneS68k() : pcd_cycles_m68k_to_s68k(SekCyclesDone());
-  d = ((d - Pico_mcd->m.stopwatch_base_c) * ((1LL << 32) / 384)) >> 32;
+  d = DIVQ32(d - Pico_mcd->m.stopwatch_base_c, 384);
   return d & 0x0fff;
 }
 
@@ -482,10 +482,6 @@ void s68k_reg_write8(u32 a, u32 d)
       u32 d_old = Pico_mcd->s68k_regs[0x37];
       Pico_mcd->s68k_regs[0x37] = d & 7;
       if ((d ^ d_old) & 4) {
-        // ??
-	if (d & 4)
-          pcd_event_schedule_s68k(PCD_EVENT_CDC, 12500000/75);
-
         if ((d & 4) && (Pico_mcd->s68k_regs[0x33] & PCDS_IEN4)) {
           elprintf(EL_INTS, "cdd export irq 4");
           pcd_irq_s68k(4, 1);
@@ -678,7 +674,7 @@ static u32 PicoReadM68k8_ramc(u32 a)
 {
   u32 d = 0;
 
-  if (PicoIn.opt & POPT_EN_MCD_RAMCART) {
+  if (Pico.romsize == 0 && (PicoIn.opt & POPT_EN_MCD_RAMCART)) {
     if ((a & 0xf00001) == 0x400001) {
       if (Pico.sv.data != NULL)
         d = 3; // 64k cart
@@ -707,7 +703,7 @@ static u32 PicoReadM68k16_ramc(u32 a)
 
 static void PicoWriteM68k8_ramc(u32 a, u32 d)
 {
-  if (PicoIn.opt & POPT_EN_MCD_RAMCART) {
+  if (Pico.romsize == 0 && (PicoIn.opt & POPT_EN_MCD_RAMCART)) {
     if ((a & 0xf00001) == 0x600001) {
       if (Pico.sv.data != NULL && (Pico_mcd->m.bcram_reg & 1)) {
         Pico.sv.data[((a >> 1) & 0xffff) + 0x2000] = d;

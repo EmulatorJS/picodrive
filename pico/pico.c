@@ -54,6 +54,7 @@ void PicoExit(void)
     PicoExitMCD();
   z80_exit();
   PsndExit();
+  PicoCloseTape();
 
   free(Pico.sv.data);
   Pico.sv.data = NULL;
@@ -237,6 +238,8 @@ void PicoLoopPrepare(void)
     Pico.t.vcnt_wrap = 0xEB;
     Pico.t.vcnt_adj = 6;
   }
+
+  Pico.t.m68c_line_start = Pico.t.m68c_aim; // for VDP slot calculation
   PicoVideoFIFOMode(Pico.video.reg[1]&0x40, Pico.video.reg[12]&1);
 
   Pico.m.dirtyPal = 1;
@@ -246,6 +249,8 @@ void PicoLoopPrepare(void)
     PicoMCDPrepare();
   if (PicoIn.AHW & PAHW_32X)
     Pico32xPrepare();
+  if (PicoIn.AHW & PAHW_SMS)
+    PicoPrepareMS();
 }
 
 #include "pico_cmn.c"
@@ -293,8 +298,6 @@ void PicoFrame(void)
     PicoFrameMCD();
     goto end;
   }
-
-  //if(Pico.video.reg[12]&0x2) Pico.video.status ^= SR_ODD; // change odd bit in interlace mode
 
   PicoFrameStart();
   PicoFrameHints();

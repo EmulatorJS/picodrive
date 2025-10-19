@@ -49,7 +49,7 @@ static int handle_mp3(const char *fname, int index)
     return -1;
   }
 
-  track->type = CT_AUDIO;
+  track->type = CT_MP3;
   track->fd = tmp_file;
   track->offset = 0;
 
@@ -93,8 +93,6 @@ int load_cd_image(const char *cd_img_name, int *type)
   if (PicoCDLoadProgressCB != NULL)
     PicoCDLoadProgressCB(cd_img_name, 1);
 
-  Pico_mcd->cdda_type = CT_UNKNOWN;
-
   /* is this a .cue? */
   cue_data = cue_parse(cd_img_name);
   if (cue_data != NULL) {
@@ -115,7 +113,7 @@ int load_cd_image(const char *cd_img_name, int *type)
   }
   tracks[0].fd = pmf;
   tracks[0].fname = strdup(cd_img_name);
-  tracks[0].type = *type & CT_AUDIO;
+  tracks[0].type = *type;
 
   if (*type == CT_ISO)
        cd_img_sectors = pmf->size >> 11;  // size in sectors
@@ -186,8 +184,7 @@ int load_cd_image(const char *cd_img_name, int *type)
         // overriden by custom cue command
         length = cue_data->tracks[n].sector_xlength;
 
-      Pico_mcd->cdda_type = cue_data->tracks[n].type;
-      tracks[index].type = cue_data->tracks[n].type & CT_AUDIO;
+      tracks[index].type = cue_data->tracks[n].type;
 
       tracks[index].start = lba;
       lba += length;
@@ -201,6 +198,11 @@ int load_cd_image(const char *cd_img_name, int *type)
       elprintf(EL_STATUS, "Track %2i: %s %9i %s %s", n, tmp_ext, length,
           tracks[index].type ? "AUDIO" : "DATA ",
           cue_data->tracks[n].fname ? cue_data->tracks[n].fname : "");
+
+      if (tracks[index].end > 99*60*75-151) {
+        tracks[index].end = 99*60*75-151;
+        break;
+      }
     }
     goto finish;
   }
@@ -253,8 +255,7 @@ int load_cd_image(const char *cd_img_name, int *type)
         lba += length;
         tracks[index].end = lba;
 
-        Pico_mcd->cdda_type = CT_MP3;
-        tracks[index].type = CT_AUDIO;
+        tracks[index].type = CT_MP3;
 
         sprintf_lba(tmp_ext, sizeof(tmp_ext), tracks[index].start);
         elprintf(EL_STATUS, "Track %2i: %s %9i AUDIO - %s",
@@ -267,6 +268,10 @@ int load_cd_image(const char *cd_img_name, int *type)
     }
     if (ret <= 0 && i > 1)
       missed++;
+    else if (tracks[index].end > 99*60*75-151) {
+      tracks[index].end = 99*60*75-151;
+      break;
+    }
   }
 
 finish:

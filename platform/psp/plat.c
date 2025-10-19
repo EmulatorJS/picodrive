@@ -129,6 +129,20 @@ void plat_video_menu_leave(void)
 	plat_video_set_buffer(g_screen_ptr);
 }
 
+void plat_show_cursor(int on)
+{
+}
+
+int plat_grab_cursor(int on)
+{
+	return 0;
+}
+
+int plat_has_wm(void)
+{
+	return 0;
+}
+
 /* check arg at index x */
 int plat_parse_arg(int argc, char *argv[], int *x)
 {
@@ -181,30 +195,13 @@ int plat_is_dir(const char *path)
 /* current time in ms */
 unsigned int plat_get_ticks_ms(void)
 {
-	struct timeval tv;
-	unsigned int ret;
-
-	gettimeofday(&tv, NULL);
-
-	ret = (unsigned)tv.tv_sec * 1000;
-	/* approximate /= 1000 */
-	ret += ((unsigned)tv.tv_usec * 4194) >> 22;
-
-	return ret;
+	return clock() / 1000;
 }
 
 /* current time in us */
 unsigned int plat_get_ticks_us(void)
 {
-	struct timeval tv;
-	unsigned int ret;
-
-	gettimeofday(&tv, NULL);
-
-	ret = (unsigned)tv.tv_sec * 1000000;
-	ret += (unsigned)tv.tv_usec;
-
-	return ret;
+	return clock();
 }
 
 /* sleep for some time in ms */
@@ -216,15 +213,9 @@ void plat_sleep_ms(int ms)
 /* sleep for some time in us */
 void plat_wait_till_us(unsigned int us_to)
 {
-	unsigned int now;
-
-	now = plat_get_ticks_us();
-
-	while ((signed int)(us_to - now) > 512)
-	{
-		usleep(1024);
-		now = plat_get_ticks_us();
-	}
+	unsigned int ticks = clock();
+	if (us_to > ticks)
+		usleep(us_to - ticks);
 }
 
 /* wait until some event occurs, or timeout */

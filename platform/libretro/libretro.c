@@ -124,6 +124,8 @@ static int vout_ghosting = 0;
 static bool libretro_update_av_info = false;
 static bool libretro_update_geometry = false;
 
+static unsigned short libretro_mem_AHW = 0;
+
 #if defined(RENDER_GSKIT_PS2)
 #define VOUT_8BIT_WIDTH 328
 #define VOUT_8BIT_HEIGHT 256
@@ -1011,9 +1013,11 @@ static bool disk_set_image_index(unsigned int index)
             disks[index].fname);
 
    ret = -1;
-   cd_type = PicoCdCheck(disks[index].fname, NULL);
-   if (cd_type >= 0 && cd_type != CT_UNKNOWN)
-      ret = cdd_load(disks[index].fname, cd_type);
+   if (PicoIn.AHW & PAHW_MCD) {
+     cd_type = PicoCdCheck(disks[index].fname, NULL);
+     if (cd_type >= 0 && cd_type != CT_UNKNOWN)
+        ret = cdd_load(disks[index].fname, cd_type);
+   }
    if (ret != 0) {
       if (log_cb)
          log_cb(RETRO_LOG_ERROR, "Load failed, invalid CD image?\n");
@@ -1355,16 +1359,34 @@ static void set_memory_maps(void)
       const uint64_t mem = RETRO_MEMDESC_SYSTEM_RAM;
       struct retro_memory_map mmaps;
       struct retro_memory_descriptor descs[] = {
-         { mem, PicoMem.ram,        0,           0xFF0000, 0, 0, 0x10000, "68KRAM" },
+         { mem, PicoMem.ram,           0,           0xFF0000, 0, 0, 0x10000, "68KRAM" },
          /* virtual address using SCD_BIT so all 512M of prg_ram can be accessed */
          /* at address $80020000 */
-         { mem, Pico_mcd->prg_ram,  0, SCD_BIT | 0x020000, 0, 0, 0x80000, "PRGRAM" },
+         { mem, Pico_mcd->prg_ram,     0, SCD_BIT | 0x020000, 0, 0, 0x80000, "PRGRAM" },
+         { mem, Pico_mcd->word_ram2M,  0,           0x200000, 0, 0, 0x40000, "WORDRAM" },
       };
 
       mmaps.descriptors = descs;
       mmaps.num_descriptors = sizeof(descs) / sizeof(descs[0]);
       environ_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &mmaps);
    }
+   else if (PicoIn.AHW & PAHW_32X)
+   {
+      const uint64_t mem = RETRO_MEMDESC_SYSTEM_RAM;
+      const uint64_t sav = RETRO_MEMDESC_SAVE_RAM;
+      struct retro_memory_map mmaps;
+      struct retro_memory_descriptor descs[] = {
+         { mem, PicoMem.ram,        0, 0x00FF0000, 0, 0, 0x10000,      "68KRAM" },
+         { mem, Pico32xMem->sdram,  0, 0x06000000, 0, 0, 0x40000,      "SDRAM" },
+         { sav, Pico.sv.data,       0, 0x00000000, 0, 0, Pico.sv.size, "CARTRAM" },
+      };
+
+      mmaps.descriptors = descs;
+      mmaps.num_descriptors = sizeof(descs) / sizeof(descs[0]);
+      environ_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &mmaps);
+   }
+
+   libretro_mem_AHW = PicoIn.AHW;
 }
 
 bool retro_load_game(const struct retro_game_info *info)
@@ -1663,6 +1685,7 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
+    libretro_mem_AHW = 0;
 }
 
 unsigned retro_get_region(void)
@@ -1678,10 +1701,10 @@ void *retro_get_memory_data(unsigned type)
    {
       case RETRO_MEMORY_SAVE_RAM:
          /* Note: MCD RAM cart uses Pico.sv.data */
-         if ((PicoIn.AHW & PAHW_MCD) &&
+         if ((PicoIn.AHW & PAHW_MCD) && Pico.romsize == 0 &&
                !(PicoIn.opt & POPT_EN_MCD_RAMCART))
             data = Pico_mcd->bram;
-         else
+         else // TODO: handle copying to/from bram somewhere
             data = Pico.sv.data;
          break;
       case RETRO_MEMORY_SYSTEM_RAM:
@@ -1712,7 +1735,7 @@ size_t retro_get_memory_size(unsigned type)
    switch(type)
    {
       case RETRO_MEMORY_SAVE_RAM:
-         if (PicoIn.AHW & PAHW_MCD)
+         if ((PicoIn.AHW & PAHW_MCD) && Pico.romsize == 0)
          {
             if (PicoIn.opt & POPT_EN_MCD_RAMCART)
                return 0x12000;
@@ -2260,9 +2283,15 @@ void run_events_pico(unsigned int events)
     }
     if (events & (1 << RETRO_DEVICE_ID_JOYPAD_R)) {
 	PicoPicohw.page++;
-	if (PicoPicohw.page > 6)
-	    PicoPicohw.page = 6;
-	emu_status_msg("Page %i", PicoPicohw.page);
+	if (PicoPicohw.page > 7)
+	    PicoPicohw.page = 7;
+        if (PicoPicohw.page == 7) {
+            // Used in games that require the Keyboard Pico peripheral
+            emu_status_msg("Test Page");
+        }
+        else {
+            emu_status_msg("Page %i", PicoPicohw.page);
+        }
     }
     if (events & (1 << RETRO_DEVICE_ID_JOYPAD_X)) {
         if (pico_inp_mode == 2) {
@@ -2273,7 +2302,7 @@ void run_events_pico(unsigned int events)
             emu_status_msg("Input: Pen on Pad");
         }
     }
-    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_SELECT)) {
+    if (events & (1 << RETRO_DEVICE_ID_JOYPAD_Y)) {
         if (pico_inp_mode == 1) {
             pico_inp_mode = 0;
             emu_status_msg("Input: D-Pad");
@@ -2323,6 +2352,9 @@ void retro_run(void)
    int pad, i, padcount;
    static void *buff;
 
+   if (PicoIn.AHW != libretro_mem_AHW)
+      set_memory_maps();
+
    PicoIn.skipFrame = 0;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
@@ -2366,7 +2398,7 @@ void retro_run(void)
    if (PicoIn.AHW == PAHW_PICO) {
        uint16_t ev = input[0] &
              ((1 << RETRO_DEVICE_ID_JOYPAD_L) | (1 << RETRO_DEVICE_ID_JOYPAD_R) |
-              (1 << RETRO_DEVICE_ID_JOYPAD_X) | (1 << RETRO_DEVICE_ID_JOYPAD_SELECT) |
+              (1 << RETRO_DEVICE_ID_JOYPAD_X) | (1 << RETRO_DEVICE_ID_JOYPAD_Y) |
               (1 << RETRO_DEVICE_ID_JOYPAD_START));
        uint16_t new_ev = ev & ~pico_events;
        pico_events = ev;

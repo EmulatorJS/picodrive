@@ -35,6 +35,8 @@ extern int g_screen_ppitch; // pitch in pixels
 #define EOPT_WIZ_TEAR_FIX (1<<19)
 #define EOPT_EXT_FRMLIMIT (1<<20) // no internal frame limiter (limited by snd, etc)
 #define EOPT_PICO_PEN     (1<<21)
+#define EOPT_MOUSE        (1<<22)
+#define EOPT_GUN_CURSOR   (1<<23)
 
 enum {
 	EOPT_SCALE_NONE = 0,
@@ -93,6 +95,8 @@ typedef struct _currentConfig_t {
 	int filter;  // EOPT_FILTER_* video filter
 	int ghosting;
 	int analog_deadzone;
+	int keyboard;
+	int gunx, guny;
 	int msh2_khz;
 	int ssh2_khz;
 	int overclock_68k;
@@ -106,6 +110,8 @@ extern int config_slot, config_slot_current;
 extern unsigned char *movie_data;
 extern int reset_timing;
 extern int flip_after_sync;
+extern int kbd_mode;
+extern struct vkbd *vkbd;
 
 #define PICO_PEN_ADJUST_X 1
 #define PICO_PEN_ADJUST_Y 1
@@ -136,6 +142,8 @@ void  emu_loop(void);
 
 int   emu_reload_rom(const char *rom_fname_in);
 int   emu_swap_cd(const char *fname);
+int   emu_play_tape(const char *fname);
+int   emu_record_tape(const char *ext);
 int   emu_save_load_game(int load, int sram);
 void  emu_reset_game(void);
 
@@ -187,6 +195,11 @@ int plat_parse_arg(int argc, char *argv[], int *x);
 void plat_early_init(void);
 void plat_init(void);
 void plat_finish(void);
+
+void plat_show_cursor(int on);
+int plat_grab_cursor(int on);
+int plat_has_wm(void);
+void plat_set_window(int w, int h);
 
 /* used before things blocking for a while (these funcs redraw on return) */
 void plat_status_msg_busy_first(const char *msg);

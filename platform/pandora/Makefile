@@ -23,16 +23,14 @@ all: rel
 /tmp/PicoDrive.pxml: PicoDrive.pxml.template FORCE
 	./make_pxml.sh $< $@
 
-PicoDrive: ../../picodrive
-	$(STRIP) $^ -o $@
-
-rel: PicoDrive PicoDrive.sh picorestore \
+rel: ../../picodrive PicoDrive.sh picorestore \
 	PicoDrive.png PicoDrive_p.png \
 	../../pico/carthw.cfg skin \
 	../../README.md /tmp/PicoDrive.pxml
 	rm -rf out
 	mkdir out
 	cp -r $^ out/
+	mv out/README.md out/README
 	$(PND_MAKE) -p PicoDrive_$(VER).pnd -d out -x out/PicoDrive.pxml -i out/PicoDrive.png -c
 
 FORCE:

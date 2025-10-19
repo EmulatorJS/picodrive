@@ -23,6 +23,7 @@
 #include "../libpicofe/menu.h"
 #include "../common/input_pico.h"
 #include "../common/emu.h"
+#include "../common/keyboard.h"
 
 #include <pico/pico_int.h>
 
@@ -374,7 +375,7 @@ static void sound_deinit(void)
 #define is_16bit_mode() \
 	(currentConfig.renderer == RT_16BIT || (PicoIn.AHW & PAHW_32X) || is_bg_frame)
 
-static int vsync_handler(void)
+static int vsync_handler(int cause)
 {
 	iSignalSema(vsync_sema_id);
 	if (sound_stopped)
@@ -382,15 +383,6 @@ static int vsync_handler(void)
 
 	ExitHandler();
 	return 0;
-}
-
-/* Copy of gsKit_sync_flip, but without the 'flip' */
-static void gsKit_sync(GSGLOBAL *gsGlobal)
-{
-	if (!gsGlobal->FirstFrame)
-		WaitSema(vsync_sema_id);
-
-	while (PollSema(vsync_sema_id) >= 0);
 }
 
 /* Copy of gsKit_sync_flip, but without the 'sync' */
@@ -829,6 +821,10 @@ void pemu_finalize_frame(const char *fps, const char *notice)
 			draw_pico_ptr();
 	}
 
+	// draw virtual keyboard on display
+	if (kbd_mode && currentConfig.keyboard == 1 && vkbd)
+		vkbd_draw(vkbd);
+
 	osd_buf_cnt = 0;
 	if (notice)      osd_text(4, notice);
 	if (emu_opt & 2) osd_text(OSD_FPS_X, fps);
@@ -838,6 +834,12 @@ void pemu_finalize_frame(const char *fps, const char *notice)
 		cd_leds();
 
 	FlushCache(WRITEBACK_DCACHE);
+}
+
+/* clear all video buffers to remove remnants in borders */
+void plat_video_clear_buffers(void)
+{
+	// not needed since output buffer is cleared in flip anyway
 }
 
 /* display a completed frame buffer and prepare a new render buffer */
@@ -866,7 +868,11 @@ void plat_video_flip(void)
 /* wait for start of vertical blanking */
 void plat_video_wait_vsync(void)
 {
-	gsKit_sync(gsGlobal);
+	while (PollSema(vsync_sema_id) >= 0);
+
+	if (!gsGlobal->FirstFrame)
+		WaitSema(vsync_sema_id);
+	
 }
 
 /* update surface data */
@@ -926,6 +932,8 @@ void plat_init(void)
 {
 	video_init();
 	init_joystick_driver(false);
+
+	flip_after_sync = 1;
 	in_ps2_init(in_ps2_defbinds);
 	in_probe();
 	init_audio_driver();
@@ -1062,6 +1070,20 @@ void plat_video_loop_prepare(void)
 {
 	apply_renderer();
 	vidResetMode();
+}
+
+void plat_show_cursor(int on)
+{
+}
+
+int plat_grab_cursor(int on)
+{
+	return 0;
+}
+
+int plat_has_wm(void)
+{
+	return 0;
 }
 
 /* prepare for entering the emulator loop */

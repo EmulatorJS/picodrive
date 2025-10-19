@@ -8,8 +8,10 @@
  * See COPYING file in the top-level directory.
  */
 
+#include <assert.h>
 #include "pico_int.h"
 #include "memory.h"
+#include "state.h"
 
 #include "sound/ym2612.h"
 #include "sound/sn76496.h"
@@ -25,9 +27,9 @@ static void xmap_set(uptr *map, int shift, u32 start_addr, u32 end_addr,
     const void *func_or_mh, int is_func)
 {
 #ifdef __clang__
-  // workaround bug (segfault) in 
+  // workaround bug (segfault) in
   // Apple LLVM version 4.2 (clang-425.0.27) (based on LLVM 3.2svn)
-  volatile 
+  volatile
 #endif
   uptr addr = (uptr)func_or_mh;
   int mask = (1 << shift) - 1;
@@ -234,9 +236,9 @@ static void m68k_unmapped_write16(u32 a, u32 d)
 void m68k_map_unmap(u32 start_addr, u32 end_addr)
 {
 #ifdef __clang__
-  // workaround bug (segfault) in 
+  // workaround bug (segfault) in
   // Apple LLVM version 4.2 (clang-425.0.27) (based on LLVM 3.2svn)
-  volatile 
+  volatile
 #endif
   uptr addr;
   int shift = M68K_MEM_SHIFT;
@@ -340,7 +342,7 @@ static u32 read_pad_6btn(int i, u32 out_bits)
     value = (pad & 0xc0) >> 2;                   // ?0SA 0000
     goto out;
   }
-  else if(phase == 3) {
+  else if (phase == 3) {
     if (out_bits & 0x40)
       value = (pad & 0x30) | ((pad >> 8) & 0xf); // ?1CB MXYZ
     else
@@ -403,6 +405,82 @@ static u32 read_pad_4way(int i, u32 out_bits)
   return value;
 }
 
+static u32 read_pad_mouse(int i, u32 out_bits)
+{
+  int phase = Pico.m.padTHPhase[i];
+  u32 value;
+
+  int x = PicoIn.mouseInt[0] - PicoIn.mouseInt[2];
+  int y = PicoIn.mouseInt[3] - PicoIn.mouseInt[1];
+
+  switch (phase) {
+  case 0:
+    value = 0x00;
+    break;
+  case 1:
+    value = 0x0b;
+    break;
+  case 2:
+    value = 0x0f;
+    // store last read values for x,y difference calculation
+    PicoIn.mouseInt[2] = PicoIn.mouseInt[0];
+    PicoIn.mouseInt[3] = PicoIn.mouseInt[1];
+    break;
+  case 3:
+    value = 0x0f;
+    // latch current mouse position during readout
+    PicoIn.mouseInt[0] = PicoIn.mouse[0];
+    PicoIn.mouseInt[1] = PicoIn.mouse[1];
+    break;
+  case 4: // xxxx OOSS, OO = y,x overflow, SS = y,x sign bits
+    value = (x<0) | ((y<0)<<1) | ((x<-255||x>255)<<2) | ((y<-255||y>255)<<3);
+    break;
+  case 5:
+    value = (PicoIn.padInt[i] & 0xf0) >> 4;      // SMRL, mapped from SACB
+    break;
+  case 6: // high nibble of x
+    value = (x>>4) & 0xf;
+    break;
+  case 7: // low nibble of x
+    value = x & 0xf;
+    break;
+  case 8: // high nibble of y
+    value = (y>>4) & 0xf;
+    break;
+  case 9: // low nibble of y
+  default: // also sent on all later phases
+    value = y & 0xf;
+    break;
+  }
+
+  value |= (out_bits & 0x40) | ((out_bits & 0x20)>>1);
+  return value;
+}
+
+static u32 read_pad_menacer(int i, u32 out_bits)
+{
+  u32 pad = PicoIn.padInt[i]; // Get pad MXYZ SACB RLDU; NB not(!) inverted
+  u32 value;
+
+  value = ((pad>>4) & 0x09) | ((pad>>3) & 0x4) | ((pad>>5) & 0x2); // .... SCAB
+
+  value |= 0x40; // TH line is light sensor. Pretend there's always darkness...
+  return value;
+}
+
+static u32 read_pad_justifier(int i, u32 out_bits)
+{
+  u32 pad = ~PicoIn.padInt[i]; // Get inverse of pad MXYZ SACB RLDU
+  u32 value = 0x30; // .111 0000, for ID
+
+  // output data: .tgd ...., t = TH, g = gun select, d = disable
+  if (!(PicoMem.ioports[i+1] & out_bits & 0x70)) // blue gun, enabled
+    value |= ((pad>>6) & 0x03); // .011 ..SA
+
+  value |= (out_bits & 0x40);
+  return value;
+}
+
 static u32 read_nothing(int i, u32 out_bits)
 {
   return 0xff;
@@ -410,36 +488,93 @@ static u32 read_nothing(int i, u32 out_bits)
 
 typedef u32 (port_read_func)(int index, u32 out_bits);
 
+int port_type[3] = {
+  PICO_INPUT_PAD_3BTN,
+  PICO_INPUT_PAD_3BTN,
+  PICO_INPUT_NOTHING
+};
+int port_lightgun;
+
 static port_read_func *port_readers[3] = {
   read_pad_3btn,
   read_pad_3btn,
   read_nothing
 };
 
-static int padTHLatency[3]; // TODO this should be in the save file structures
+static int padTHLatency[3];
+static int padTLLatency[3];
+static int padTHTimeout[3];
 
 static NOINLINE u32 port_read(int i)
 {
   u32 data_reg = PicoMem.ioports[i + 1];
   u32 ctrl_reg = PicoMem.ioports[i + 4] | 0x80;
+  u32 cycles = SekCyclesDone();
   u32 in, out;
 
   out = data_reg & ctrl_reg;
 
+  // controllers have a timeout on TH, they reset if not toggled for some time
+  if (CYCLES_GE(cycles, padTHTimeout[i]) && i < 2) {
+    padTHTimeout[i] = cycles + 0x70000000;
+    Pico.m.padTHPhase[i] = 0;
+  }
+
   // pull-ups: should be 0x7f, but Decap Attack has a bug where it temp.
   // disables output before doing TH-low read, so emulate RC filter for TH.
-  // Decap Attack reportedly doesn't work on Nomad but works on must
+  // Decap Attack reportedly doesn't work on Nomad but works on most
   // other MD revisions (different pull-up strength?).
   u32 mask = 0x3f;
-  if (CYCLES_GE(SekCyclesDone(), padTHLatency[i])) {
+  if (CYCLES_GE(cycles, padTHLatency[i])) {
     mask |= 0x40;
-    padTHLatency[i] = SekCyclesDone();
+    padTHLatency[i] = cycles;
   }
   out |= mask & ~ctrl_reg;
 
   in = port_readers[i](i, out);
 
+  // Sega mouse uses the TL/TR lines for req/ack. For buggy drivers, make sure
+  // there's some delay before ack is sent by taking over the new TL line level
+  if (CYCLES_GE(cycles, padTLLatency[i]))
+    padTLLatency[i] = cycles;
+  else
+    in ^= 0x10; // TL
+
   return (in & ~ctrl_reg) | (data_reg & ctrl_reg);
+}
+
+// update ports
+void PicoPortUpdate(void)
+{
+  if (port_lightgun || (Pico.m.hardware & PMS_HW_LG)) {
+    PicoIn.mouseInt[0] += PicoIn.mouse[0] - PicoIn.mouseInt[2];
+    PicoIn.mouseInt[1] += PicoIn.mouse[1] - PicoIn.mouseInt[3];
+    PicoIn.mouseInt[2] = PicoIn.mouse[0];
+    PicoIn.mouseInt[3] = PicoIn.mouse[1];
+    if (PicoIn.mouseInt[0] < 0) PicoIn.mouseInt[0] = 0;
+    if (PicoIn.mouseInt[0] > 320 ) PicoIn.mouseInt[0] = 320;
+    if (PicoIn.mouseInt[1] < 0) PicoIn.mouseInt[1] = 0;
+    if (PicoIn.mouseInt[1] > 240) PicoIn.mouseInt[1] = 240;
+  }
+}
+
+void PicoPortTrigger(void)
+{
+  // TODO mx/my scaling for V28/V30, H32/H40, soft/hardscaling?
+  int mx = PicoIn.mouseInt[0] + PicoIn.gunx;
+  int my = PicoIn.mouseInt[1] + PicoIn.guny;
+
+  if (unlikely(Pico.m.scanline == my) && port_lightgun &&
+      ((PicoMem.ioports[4]|PicoMem.ioports[5]) & 0x80)) {
+    // there's a rather massive delay from VDP, TV, light sensor, infrared
+    // transmission, to the TH pin; it lasts well into the next line.
+    if (port_type[1] == PICO_INPUT_JUSTIFIER) {
+      // justifier should trigger only if gun enabled?
+      if (!(PicoMem.ioports[2] & 0x30))
+        PicoVideoTriggerTH(mx + 66, my);
+    } else
+      PicoVideoTriggerTH(mx + 136, my);
+  }
 }
 
 // pad export for J-Cart
@@ -451,36 +586,31 @@ u32 PicoReadPad(int i, u32 out_bits)
 void PicoSetInputDevice(int port, enum input_device device)
 {
   port_read_func *func;
+  int is_lg = device == PICO_INPUT_LIGHT_GUN || device == PICO_INPUT_JUSTIFIER;
 
   if (port < 0 || port > 2)
     return;
 
-  if (port == 1 && port_readers[0] == read_pad_team)
-    func = read_nothing;
-
-  else switch (device) {
-  case PICO_INPUT_PAD_3BTN:
-    func = read_pad_3btn;
-    break;
-
-  case PICO_INPUT_PAD_6BTN:
-    func = read_pad_6btn;
-    break;
-
-  case PICO_INPUT_PAD_TEAM:
-    func = read_pad_team;
-    break;
-
-  case PICO_INPUT_PAD_4WAY:
-    func = read_pad_4way;
-    break;
-
-  default:
-    func = read_nothing;
-    break;
+  switch (device) {
+  case PICO_INPUT_PAD_3BTN:   func = read_pad_3btn; break;
+  case PICO_INPUT_PAD_6BTN:   func = read_pad_6btn; break;
+  case PICO_INPUT_PAD_TEAM:   func = read_pad_team; break;
+  case PICO_INPUT_PAD_4WAY:   func = read_pad_4way; break;
+  case PICO_INPUT_MOUSE:      func = read_pad_mouse; break;
+  case PICO_INPUT_LIGHT_GUN:  func = read_pad_menacer; break;
+  case PICO_INPUT_JUSTIFIER:  func = read_pad_justifier; break;
+  default:                    func = read_nothing; break;
   }
 
+  if (port == 1 && port_type[0] == PICO_INPUT_PAD_TEAM)
+    func = read_nothing;
+
+  port_lightgun &= ~(1<<port);
+  port_lightgun |= is_lg<<port;
+  port_type[port] = device;
   port_readers[port] = func;
+
+  padTLLatency[port] = padTHLatency[port] = padTHTimeout[port] = SekCyclesDone();
 }
 
 NOINLINE u32 io_ports_read(u32 a)
@@ -501,25 +631,41 @@ NOINLINE void io_ports_write(u32 a, u32 d)
 {
   a = (a>>1) & 0xf;
 
-  // 6 button gamepad: if TH went from 0 to 1, gamepad changes state
+  // for some controllers, changing TH/TR changes controller state
   if (1 <= a && a <= 2)
   {
-    Pico.m.padDelay[a - 1] = 0;
-    if (port_readers[a - 1] == read_pad_team) {
+    // there's a timeout for toggling the TH line
+    if (CYCLES_GE(SekCyclesDone(), padTHTimeout[a - 1]))
+      Pico.m.padTHPhase[a - 1] = 0;
+    padTHTimeout[a - 1] = SekCyclesDone() + 25*488;
+
+    if (port_type[a - 1] == PICO_INPUT_PAD_TEAM) {
       if (d & 0x40)
         Pico.m.padTHPhase[a - 1] = 0;
       else if ((d^PicoMem.ioports[a]) & 0x60)
         Pico.m.padTHPhase[a - 1]++;
-    } else if (port_readers[0] == read_pad_4way) {
+    } else if (port_type[0] == PICO_INPUT_PAD_4WAY) {
       if (a == 2 && ((PicoMem.ioports[a] ^ d) & 0x70))
         Pico.m.padTHPhase[0] = 0;
       if (a == 1 && !(PicoMem.ioports[a] & 0x40) && (d & 0x40))
         Pico.m.padTHPhase[0]++;
+    } else if (port_type[a - 1] == PICO_INPUT_MOUSE) {
+      if ((d^PicoMem.ioports[a]) & 0x20) {
+        if (Pico.m.padTHPhase[a - 1]) { // in readout?
+          padTLLatency[a - 1] = SekCyclesDone() + 100;
+          Pico.m.padTHPhase[a - 1]++;
+        } else // in ID cycle
+          padTLLatency[a - 1] = SekCyclesDone() + 25; // Cannon Fodder
+      }
+      if ((d^PicoMem.ioports[a]) & 0x40) {
+        // 1->0 transition starts the readout protocol
+        Pico.m.padTHPhase[a - 1] = !(d & 0x40);
+      }
     } else if (!(PicoMem.ioports[a] & 0x40) && (d & 0x40))
       Pico.m.padTHPhase[a - 1]++;
   }
 
-  // after switching TH to input there's a latency before the pullup value is 
+  // after switching TH to input there's a latency before the pullup value is
   // read back as input (see Decap Attack, not in Samurai Showdown, 32x WWF Raw)
   if (4 <= a && a <= 5) {
     if ((PicoMem.ioports[a] & 0x40) && !(d & 0x40) && !(PicoMem.ioports[a - 3] & 0x40))
@@ -529,6 +675,64 @@ NOINLINE void io_ports_write(u32 a, u32 d)
 
   // certain IO ports can be used as RAM
   PicoMem.ioports[a] = d;
+}
+
+void io_ports_reset(void)
+{
+  int port;
+
+  for (port = 0; port < 3; port++)
+    padTLLatency[port] = padTHLatency[port] = padTHTimeout[port] = SekCyclesDone();
+}
+
+int io_ports_pack(void *buf, size_t size)
+{
+  size_t b, i;
+  memcpy(buf, PicoMem.ioports, (b = sizeof(PicoMem.ioports)));
+  for (i = 0; i < ARRAY_SIZE(Pico.m.padTHPhase); i++)
+    save_u8_(buf, &b, Pico.m.padTHPhase[i]);
+  for (i = 0; i < ARRAY_SIZE(Pico.m.padDelay); i++)
+    save_u8_(buf, &b, Pico.m.padDelay[i]);
+  for (i = 0; i < ARRAY_SIZE(padTHLatency); i++) {
+    save_s32(buf, &b, padTHLatency[i]);
+    save_s32(buf, &b, padTLLatency[i]);
+  }
+  for (i = 0; i < 4; i++)
+    save_u16(buf, &b, PicoIn.padInt[i]);
+  for (i = 0; i < 4; i++)
+    save_s32(buf, &b, PicoIn.mouseInt[i]);
+  for (i = 0; i < ARRAY_SIZE(padTHTimeout); i++)
+    save_u32(buf, &b, padTHTimeout[i]);
+  assert(b <= size);
+  return b;
+}
+
+void io_ports_unpack(const void *buf, size_t size)
+{
+  size_t b, i;
+  memcpy(PicoMem.ioports, buf, (b = sizeof(PicoMem.ioports)));
+  for (i = 0; i < ARRAY_SIZE(Pico.m.padTHPhase); i++)
+    Pico.m.padTHPhase[i] = load_u8_(buf, &b);
+  for (i = 0; i < ARRAY_SIZE(Pico.m.padDelay); i++)
+    Pico.m.padDelay[i] = load_u8_(buf, &b);
+  for (i = 0; i < ARRAY_SIZE(padTHLatency); i++) {
+    padTHLatency[i] = load_s32(buf, &b);
+    padTLLatency[i] = load_s32(buf, &b);
+  }
+  for (i = 0; i < 4; i++)
+    PicoIn.padInt[i] = load_u16(buf, &b);
+  for (i = 0; i < 4; i++)
+    PicoIn.mouseInt[i] = load_s32(buf, &b);
+
+  // convert pad delay from line count to samples
+  for (i = 0; i < ARRAY_SIZE(padTHTimeout); i++) {
+    if (b < size)
+      padTHTimeout[i] = load_u32(buf, &b);
+    else
+      padTHTimeout[i] = SekCyclesDone() - (25-Pico.m.padDelay[i]) * 488;
+  }
+
+  assert(b <= size);
 }
 
 static int z80_cycles_from_68k(void)
@@ -558,7 +762,7 @@ void NOINLINE ctl_write_z80busreq(u32 d)
         pprof_start(m68k);
         PicoSyncZ80(SekCyclesDone());
         pprof_end_sub(m68k);
-        granted = Pico.t.z80c_aim + 6; // M cycle is 3-6 cycles 
+        granted = Pico.t.z80c_aim + 6; // M cycle is 3-6 cycles
         Pico.t.z80_busdelay += (Pico.t.z80c_cnt - granted) << 8;
         Pico.t.z80c_cnt = granted;
       }
@@ -629,7 +833,7 @@ static u32 PicoRead8_sram(u32 a)
   // XXX: this is banking unfriendly
   if (a < Pico.romsize)
     return Pico.rom[MEM_BE2(a)];
-  
+ 
   return m68k_unmapped_read8(a);
 }
 
@@ -718,7 +922,7 @@ static u32 PicoRead8_z80(u32 a)
   if ((a & 0x4000) == 0x0000) {
     d = PicoMem.zram[a & 0x1fff];
   } else if ((a & 0x6000) == 0x4000) // 0x4000-0x5fff
-    d = ym2612_read_local_68k(); 
+    d = ym2612_read_local_68k();
   else {
     elprintf(EL_UIO|EL_ANOMALY, "68k bad read [%06x] @%06x", a, SekPc);
     d = (u8)PicoRead16_floating(a);
@@ -746,8 +950,7 @@ static void PicoWrite8_z80(u32 a, u32 d)
     return;
   }
   if ((a & 0x6000) == 0x4000) { // FM Sound
-    if (PicoIn.opt & POPT_EN_FM)
-      ym2612_write_local(a & 3, d & 0xff, 0);
+    ym2612_write_local(a & 3, d & 0xff, 0);
     return;
   }
   // TODO: probably other VDP access too? Maybe more mirrors?
@@ -1133,7 +1336,7 @@ void ym2612_sync_timers(int z80_cycles, int mode_old, int mode_new)
        * Starting a timer takes place at the next tick, so xcycles needs to be
        * rounded up to that: t = next tick# = (xcycles / TICK_ZCYCLES) + 1
        */
-      unsigned t = ((xcycles * (((1LL<<32)/TIMER_A_TICK_ZCYCLES)+1))>>32) + 1;
+      unsigned t = DIVQ32(xcycles, TIMER_A_TICK_ZCYCLES) + 1;
       Pico.t.timer_a_next_oflow = t*TIMER_A_TICK_ZCYCLES + Pico.t.timer_a_step;
     }
   }
@@ -1156,7 +1359,7 @@ void ym2612_sync_timers(int z80_cycles, int mode_old, int mode_new)
        * reset by loading timer b. The first run of timer b after loading is
        * therefore shorter by up to 15 ticks.
        */
-      unsigned t = ((xcycles * (((1LL<<32)/TIMER_A_TICK_ZCYCLES)+1))>>32) + 1;
+      unsigned t = DIVQ32(xcycles, TIMER_A_TICK_ZCYCLES) + 1;
       int step = Pico.t.timer_b_step - TIMER_A_TICK_ZCYCLES*(t&15);
       Pico.t.timer_b_next_oflow = t*TIMER_A_TICK_ZCYCLES + step;
     }
@@ -1251,7 +1454,7 @@ static int ym2612_write_local(u32 a, u32 d, int is_from_z80)
           //elprintf(EL_STATUS, "%03i dac w %08x z80 %i", cycles, d, is_from_z80);
           if (ym2612.dacen)
             PsndDoDAC(cycles);
-          ym2612.dacout = ((int)d - 0x80) << 6;
+          ym2612.dacout = ((int)d - 0x80) << DAC_SHIFT;
           return 0;
         }
         case 0x2b: { /* DAC Sel  (YM2612) */
@@ -1298,22 +1501,19 @@ static u32 ym2612_read_local_68k(void)
   return ym2612.OPN.ST.status;
 }
 
-void ym2612_pack_state(void)
+// legacy code, only used for GP2X
+void ym2612_pack_state_old(void)
 {
   // timers are saved as tick counts, in 16.16 int format
-  int tac, tat = 0, tbc, tbt = 0, busy = 0;
-  tac = 1024 - ym2612.OPN.ST.TA;
-  tbc = 256  - ym2612.OPN.ST.TB;
-  if (Pico.t.ym2612_busy > 0)
-    busy = cycles_z80_to_68k(Pico.t.ym2612_busy);
-  if (Pico.t.timer_a_next_oflow != TIMER_NO_OFLOW)
-    tat = (int)((double)(Pico.t.timer_a_step - Pico.t.timer_a_next_oflow)
-          / (double)Pico.t.timer_a_step * tac * 65536);
-  if (Pico.t.timer_b_next_oflow != TIMER_NO_OFLOW)
-    tbt = (int)((double)(Pico.t.timer_b_step - Pico.t.timer_b_next_oflow)
-          / (double)Pico.t.timer_b_step * tbc * 65536);
-  elprintf(EL_YMTIMER, "save: timer a %i/%i", tat >> 16, tac);
-  elprintf(EL_YMTIMER, "save: timer b %i/%i", tbt >> 16, tbc);
+  int tat = 0, tbt = 0, busy = 0;
+  u8 buf[16];
+  size_t b = 0;
+
+  ym2612_pack_timers(buf, sizeof(buf));
+  load_u16(buf, &b), load_u16(buf, &b);
+  tat = load_u32(buf, &b);
+  tbt = load_u32(buf, &b);
+  busy = load_u32(buf, &b);
 
 #ifdef __GP2X__
   if (PicoIn.opt & POPT_EXT_FM)
@@ -1323,10 +1523,38 @@ void ym2612_pack_state(void)
     YM2612PicoStateSave2(tat, tbt, busy);
 }
 
-void ym2612_unpack_state(void)
+int ym2612_pack_timers(void *buf, size_t size)
 {
-  int i, ret, tac, tat, tbc, tbt, busy = 0;
+  // timers are saved as tick counts, in 16.16 int format
+  int tac, tat = 0, tbc, tbt = 0, busy = 0;
+  size_t b = 0;
+
+  tac = 1024 - ym2612.OPN.ST.TA;
+  tbc = 256  - ym2612.OPN.ST.TB;
+  if (Pico.t.ym2612_busy > 0)
+    busy = cycles_z80_to_68k(Pico.t.ym2612_busy);
+  if (Pico.t.timer_a_next_oflow != TIMER_NO_OFLOW)
+    tat = MULQ((Pico.t.timer_a_step - Pico.t.timer_a_next_oflow), INVQ32(TIMER_A_TICK_ZCYCLES), 16);
+  if (Pico.t.timer_b_next_oflow != TIMER_NO_OFLOW)
+    tbt = MULQ((Pico.t.timer_b_step - Pico.t.timer_b_next_oflow), INVQ32(TIMER_B_TICK_ZCYCLES), 16);
+  elprintf(EL_YMTIMER, "save: timer a %i/%i", tat >> 16, tac);
+  elprintf(EL_YMTIMER, "save: timer b %i/%i", tbt >> 16, tbc);
+
+  assert(size >= 16);
+  save_u16(buf, &b, ym2612.OPN.ST.TA);
+  save_u16(buf, &b, ym2612.OPN.ST.TB);
+  save_u32(buf, &b, tat);
+  save_u32(buf, &b, tbt);
+  save_u32(buf, &b, busy);
+  return b;
+}
+
+// legacy code, only used for GP2X
+void ym2612_unpack_state_old(void)
+{
+  int i, ret, tat, tbt, busy = 0;
   YM2612PicoStateLoad();
+  Pico.t.m68c_frame_start = SekCyclesDone();
 
   // feed all the registers and update internal state
   for (i = 0x20; i < 0xA0; i++) {
@@ -1360,16 +1588,39 @@ void ym2612_unpack_state(void)
     elprintf(EL_STATUS, "old ym2612 state");
     return; // no saved timers
   }
+  {
+    u8 tmp[16];
+    size_t b = 0;
+    save_u16(tmp, &b, ym2612.OPN.ST.TA);
+    save_u16(tmp, &b, ym2612.OPN.ST.TB);
+    save_u32(tmp, &b, tat);
+    save_u32(tmp, &b, tbt);
+    save_u32(tmp, &b, busy);
+    ym2612_unpack_timers(tmp, b);
+  }
+}
 
+void ym2612_unpack_timers(const void *buf, size_t size)
+{
+  int tac, tat, tbc, tbt, busy;
+  size_t b = 0;
+  assert(size >= 16);
+  if (size < 16)
+    return;
+  ym2612.OPN.ST.TA = load_u16(buf, &b);
+  ym2612.OPN.ST.TB = load_u16(buf, &b);
+  tat = load_u32(buf, &b);
+  tbt = load_u32(buf, &b);
+  busy = load_u32(buf, &b);
   Pico.t.ym2612_busy = cycles_68k_to_z80(busy);
   tac = (1024 - ym2612.OPN.ST.TA) << 16;
   tbc = (256  - ym2612.OPN.ST.TB) << 16;
   if (ym2612.OPN.ST.mode & 1)
-    Pico.t.timer_a_next_oflow = (int)((double)(tac - tat) / (double)tac * Pico.t.timer_a_step);
+    Pico.t.timer_a_next_oflow = (1LL * (tac-tat) * TIMER_A_TICK_ZCYCLES)>>16;
   else
     Pico.t.timer_a_next_oflow = TIMER_NO_OFLOW;
   if (ym2612.OPN.ST.mode & 2)
-    Pico.t.timer_b_next_oflow = (int)((double)(tbc - tbt) / (double)tbc * Pico.t.timer_b_step);
+    Pico.t.timer_b_next_oflow = (1LL * (tbc-tbt) * TIMER_B_TICK_ZCYCLES)>>16;
   else
     Pico.t.timer_b_next_oflow = TIMER_NO_OFLOW;
   elprintf(EL_YMTIMER, "load: %i/%i, timer_a_next_oflow %i", tat>>16, tac>>16, Pico.t.timer_a_next_oflow >> 8);
@@ -1398,7 +1649,7 @@ static void access_68k_bus(int delay) // bus delay as Q8
   Pico.t.z80_busdelay &= 0xff; // leftover cycle fraction
   // don't use SekCyclesBurn() here since the Z80 doesn't run in cycle lock to
   // the 68K. Count the stolen cycles to be accounted later in the 68k CPU runs
-  Pico.t.z80_buscycles += 8; // TODO <=8.4 for Rick 2, but >=8.9 for misc_test
+  Pico.t.z80_buscycles += 0x80; // TODO <=8.4 for Rick 2, but >=8.9 for misc_test
 }
 
 static unsigned char z80_md_vdp_read(unsigned short a)
@@ -1444,8 +1695,7 @@ static unsigned char z80_md_bank_read(unsigned short a)
 
 static void z80_md_ym2612_write(unsigned int a, unsigned char data)
 {
-  if (PicoIn.opt & POPT_EN_FM)
-    ym2612_write_local(a, data, 1);
+  ym2612_write_local(a, data, 1);
 }
 
 static void z80_md_vdp_br_write(unsigned int a, unsigned char data)

@@ -10,12 +10,6 @@
 #define CYCLES_M68K_LINE     488 // suitable for both PAL/NTSC
 #define CYCLES_M68K_VINT_LAG 112
 
-// pad delay (for 6 button pads)
-#define PAD_DELAY() { \
-  if(Pico.m.padDelay[0]++ > 25) Pico.m.padTHPhase[0]=0; \
-  if(Pico.m.padDelay[1]++ > 25) Pico.m.padTHPhase[1]=0; \
-}
-
 // CPUS_RUN
 #ifndef CPUS_RUN
 #define CPUS_RUN(m68k_cycles) \
@@ -50,7 +44,7 @@ static int SekSyncM68k(int once)
     // the Z80 CPU is stealing some bus cycles from the 68K main CPU when 
     // accessing the main bus. Account for these by shortening the time
     // the 68K CPU runs.
-    int z80_buscyc = Pico.t.z80_buscycles >> (~Pico.m.scanline & 1);
+    int z80_buscyc = Pico.t.z80_buscycles >> (4+(~Pico.m.scanline & 1));
     // NB the Z80 isn't fast enough to steal more than half the bandwidth.
     // the fastest would be POP cc which takes 10+~3.3*2 z-cyc (~35 cyc) for a
     // 16 bit value, but 68k is only blocked for ~16 cyc for the 2 bus cycles.
@@ -58,7 +52,7 @@ static int SekSyncM68k(int once)
       z80_buscyc = cyc_do/2;
     SekExecM68k(cyc_do - z80_buscyc);
     Pico.t.m68c_cnt += z80_buscyc;
-    Pico.t.z80_buscycles -= z80_buscyc;
+    Pico.t.z80_buscycles -= z80_buscyc<<4;
     if (once) break;
   }
 
@@ -129,7 +123,7 @@ static void do_timing_hacks_start(struct PicoVideo *pv)
 
   SekCyclesBurn(cycles); // prolong cpu HOLD if necessary
   // XXX how to handle Z80 bus cycle stealing during DMA correctly?
-  if ((Pico.t.z80_buscycles -= cycles) < 0)
+  if ((Pico.t.z80_buscycles -= cycles<<4) < 0)
     Pico.t.z80_buscycles = 0;
   Pico.t.m68c_aim += Pico.m.scanline&1; // add 1 every 2 lines for 488.5 cycles
 }
@@ -146,6 +140,7 @@ static int PicoFrameHints(void)
 
   Pico.t.m68c_frame_start = Pico.t.m68c_aim;
   PsndStartFrame();
+  PicoPortUpdate();
 
   hint = pv->hint_cnt;
 
@@ -160,7 +155,7 @@ static int PicoFrameHints(void)
     Pico.m.scanline = y;
     pv->v_counter = PicoVideoGetV(y, 0);
 
-    PAD_DELAY();
+    PicoPortTick();
 
     // H-Interrupts:
     if (--hint < 0)
@@ -217,7 +212,7 @@ static int PicoFrameHints(void)
   pv->v_counter = PicoVideoGetV(y, 0);
 
   memcpy(PicoIn.padInt, PicoIn.pad, sizeof(PicoIn.padInt));
-  PAD_DELAY();
+  PicoPortTick();
 
   // Last H-Int (normally):
   if (--hint < 0)
@@ -242,6 +237,7 @@ static int PicoFrameHints(void)
 
   SyncCPUs(Pico.t.m68c_aim);
 
+  // slot 0x00
   pv->status |= SR_F;
   pv->pending_ints |= 0x20;
 
@@ -256,6 +252,12 @@ static int PicoFrameHints(void)
     // off? single exception is MOVE.L which samples IRQ after the 1st write?
     SekInterrupt(6);
   }
+
+  // slot 0x01
+  if (pv->reg[12] & 2)
+    pv->status ^= SR_ODD; // change odd bit in interlace modes
+  else
+    pv->status &= ~SR_ODD; // never set in non-interlace modes
 
   // assert Z80 interrupt for one scanline even in busrq hold (Teddy Blues)
   if (/*Pico.m.z80Run &&*/ !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80)) {
@@ -281,7 +283,7 @@ static int PicoFrameHints(void)
     Pico.m.scanline = y;
     pv->v_counter = PicoVideoGetV(y, 1);
 
-    PAD_DELAY();
+    PicoPortTick();
 
     if (unlikely(pv->status & PVS_ACTIVE) && --hint < 0)
     {
@@ -317,7 +319,7 @@ static int PicoFrameHints(void)
   Pico.m.scanline = y++;
   pv->v_counter = 0xff;
 
-  PAD_DELAY();
+  PicoPortTick();
 
   if (unlikely(pv->status & PVS_ACTIVE)) {
     if (--hint < 0) {
@@ -354,7 +356,6 @@ static int PicoFrameHints(void)
   return 0;
 }
 
-#undef PAD_DELAY
 #undef CPUS_RUN
 
 // vim:shiftwidth=2:ts=2:expandtab

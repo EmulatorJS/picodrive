@@ -20,6 +20,7 @@
 #include "../common/emu.h"
 #include "../common/arm_utils.h"
 #include "../common/input_pico.h"
+#include "../common/keyboard.h"
 #include "../common/version.h"
 #include "../libpicofe/input.h"
 #include "../libpicofe/menu.h"
@@ -77,7 +78,6 @@ static struct in_default_bind in_evdev_defbinds[] =
 	{ KEY_6,	IN_BINDTYPE_EMU, PEVB_PICO_PNEXT },
 	{ KEY_7,	IN_BINDTYPE_EMU, PEVB_PICO_STORY },
 	{ KEY_8,	IN_BINDTYPE_EMU, PEVB_PICO_PAD },
-	{ KEY_9,	IN_BINDTYPE_EMU, PEVB_PICO_PENST },
 	{ 0, 0, 0 }
 };
 
@@ -180,6 +180,9 @@ void pemu_finalize_frame(const char *fps, const char *notice)
 	}
 	if ((PicoIn.AHW & PAHW_MCD) && (currentConfig.EmuOpt & EOPT_EN_CD_LEDS))
 		draw_cd_leds();
+	// draw virtual keyboard on display
+	if (kbd_mode && currentConfig.keyboard == 1 && vkbd)
+		vkbd_draw(vkbd);
 }
 
 void plat_video_flip(void)
@@ -189,6 +192,11 @@ void plat_video_flip(void)
 
 	// XXX: drain OS event queue here, maybe we'll actually use it someday..
 	xenv_update(NULL, NULL, NULL, NULL);
+}
+
+void plat_video_clear_buffers(void)
+{
+	vout_fbdev_clear(layer_fb);
 }
 
 // pnd doesn't use multiple renderers, but we have to handle this since it's
@@ -444,6 +452,20 @@ void plat_video_loop_prepare(void)
 
 	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	// emu_video_mode_change will call pnd_setup_layer()
+}
+
+void plat_show_cursor(int on)
+{
+}
+
+int plat_grab_cursor(int on)
+{
+	return 0;
+}
+
+int plat_has_wm(void)
+{
+	return 0;
 }
 
 void pemu_loop_prep(void)

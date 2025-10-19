@@ -95,9 +95,106 @@ scaled to fit the screen.
 
 There are 2 menu actions for switching to pages or pad which will automatically
 display the images if they are available. To allow for proper pen positioning
-there is also an action for having the pen on the page/touchpad or not. Pen
-positioning is done through the D-pad if the screen has been switched to either
-pages or pad.
+there is also a function for having the pen on the page/touchpad or not, the
+toggle for which is mapped to the START pad button. Pen positioning is done
+through the D-pad if the screen has been switched to either pages or pad, or by
+mouse if physical mouse support is activated.
+
+
+#ifdef GENERIC
+How to use the mouse
+--------------------
+
+If the host system has physical mouse support, PicoDrive can use real mouse
+input to emulate a Sega Mouse on a MegaDrive base, or to control the Pico Pen.
+To activate this functionality, select `mouse` as the input device for one of
+the pads. It depends on the game as to which pad should be used for mouse
+input.
+For Pico games, one input device should be set to `pad`, the other to `mouse`.
+
+A physical mouse can be operated in either a captured or uncaptured state,
+selectable via the `Capture mouse` hotkey. In captured mode, mouse movements
+for the whole screen are sent to PicoDrive; in uncaptured mode, only mouse
+movements inside the PicoDrive window are tracked.
+
+The physical mouse buttons are mapped as follows:
+
+| Physical Mouse | Sega Mouse |   Pico Pen  |
+|:--------------:|:----------:|:-----------:|
+|  Left Button   |      B     |  Pen Button |
+|  Middle Button |    START   |  Red Button |
+|  Right Button  |      C     | Pen Up/Down |
+
+
+How to use a light gun
+----------------------
+
+PicoDrive additionally supports light guns on systems where mouse support is
+available. It can be activated by selecting `light gun` or `justifier` as the
+input device. General mouse operation is covered in the "How to use the mouse"
+section.
+
+The `light gun` setting auto configures an input device based on the currently
+emulated platform: a Sega Menacer for the Mega Drive (and derivatives) and a
+Light Phaser for the Master System. The `justifier` setting corresponds to a
+Konami Justifier. This is only available on Mega Drive based systems, and can
+only be configured as input device 2.
+
+Selecting any light gun as input enables the light gun configuration submenu.
+This allows for displaying a cursor to indicate the current aiming position,
+as well as the adjustment of an aiming offset to correct for any in-game
+displacements.
+
+The physical mouse buttons are mapped as follows:
+
+| Physical Mouse | Sega Menacer/    |
+|                | Light Phaser/    |
+|                | Konami Justifier |
+|:--------------:|:----------------:|
+|  Left Button   |         A        |
+|  Middle Button |         B        |
+|  Right Button  |       START      |
+
+The pad button mappings may also be used to access other buttons.
+
+
+#endif
+How to use keyboard input
+-------------------------
+
+Both the SC-3000 and the Sega Pico support keyboard input. To activate keyboard
+input in PicoDrive, press the "Switch keyboard" emulator hotkey while running
+a cartridge with keyboard support. Depending on the keyboard configuration
+settings, either the physical or the virtual keyboard can be used.
+
+If the physical keyboard is configured, activating the keyboard will switch off
+all other hotkeys as well as pad functions. All keyboard input is routed to
+the emulated keyboard, as configured in the physical keyboard mapping.
+
+The virtual keyboard displays an overlay when activated. The currently selected
+key is highlighted, and the selection can be changed with the left, right, up,
+and down keys. Pressing the A button will send the selected key to the emulated
+keyboard. Pressing B will show what the key value would be if the emulated Shift
+key is active. The C button will move the keyboard overlay from the top of the
+screen to the bottom and vice versa.
+
+All meta keys, like Shift, Ctrl, have a built-in toggle function. Pressing the
+A button on them will toggle their state between pressed and released. Depending
+on the state the color of the key changes slightly. Only one meta key can be
+active at the same time.
+
+
+How to load SC-3000 tapes
+-------------------------
+
+The SC-3000 microcomputer has a connector for attaching a cassette tape drive.
+PicoDrive supports tape recordings in WAV or bitstream format. Run one of the
+BASIC cartridges then load the tape image via the `Load tape` menu. Entering
+the `LOAD` command using the emulated keyboard automatically starts the virtual
+tape drive. Confirmation will usually be provided after the tape has been read.
+
+The virtual tape drive has an automatic start/stop feature. Tapes requiring
+several load operations are handled without the need for user intervention.
 
 
 Other important stuff
@@ -427,6 +524,11 @@ unit. Some games made use of this for providing better music and effects.
 Disabling this improves performance for games using the FM unit, and usually
 means falling back to the non-FM sound.
 
+@@7. "SMS palette in TMS modes"
+The Master System graphics chip can emulate the TMS grafic modes used in MSX and
+SG-1000 games, but it is using a color palette which is much darker and the
+colours aren't a good match. This option uses the original color palette of the
+TMS graphics chip, which gives better results for MSX/SG-1000 ports.
 
 Advanced options
 ----------------
@@ -468,7 +570,8 @@ It also decodes MP3s in Sega/Mega CD mode.
 Key configuration
 -----------------
 
-Select "Configure controls" from the options menu. Then selecting "Player <n>"
+Select "Configure controls" from the options menu. The "Player <n>" entry allows
+for selecting a player with the left/right buttons. Then selecting "Player <n>"
 will display 2 columns. The left column lists names of Genesis/MD controller
 buttons, the right column shows which key on your handheld is assigned to it.
 
@@ -478,6 +581,21 @@ buttons), and an option to set turbo rate (in Hz) for turbo buttons.
 Players 3 and 4 can only be used if a 4 player adapter is selected for input
 device 1, and the game is supporting this. Only 3 button pads are currently
 supported in 4 player mode.
+
+
+Keyboard configuration
+----------------------
+
+The SC-3000 and the Sega Pico can use a keyboard as input device. Select
+"Configure controls" to configure keyboard support in PicoDrive. The "Keyboard"
+entry allows choosing the keyboard type by using the left/right buttons. The
+virtual keyboard doesn't need any configuration. For configuring the physical
+keyboard mapping, select "Keyboard" when the physical keyboard is selected.
+
+Physical host keyboard keys are mapped 1:1 on emulated keyboard keys. Only the
+unmodified base keys (like A, 1 etc) can be mapped. Don't use Shift, Ctrl or
+Alt when changing the mapping, as it won't work. The default mapping matches
+a standard American PC104 keyboard.
 
 
 Cheat support

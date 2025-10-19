@@ -439,13 +439,11 @@ else ifneq (,$(findstring armv,$(platform)))
 else ifeq ($(platform), emscripten) 
 	TARGET := $(TARGET_NAME)_libretro_$(platform).bc
 	ARCH = unknown
-	CFLAGS += -D__EMSCRIPTEN__
 	ifeq ($(EMULATORJS_THREADS), 1)
 		LDFLAGS += -pthread
 		CFLAGS += -pthread
 		CXXFLAGS += -pthread
 	endif
-
 	STATIC_LINKING = 1
 	STATIC_LINKING_LINK = 1
 
@@ -661,7 +659,7 @@ SHARED ?= -shared
 LDFLAGS += $(SHARED) $(fpic)
 
 ifeq ($(ARCH),)
-ARCH = $(shell $(CC) -dumpmachine | awk -F '-' '{print $$1}')
+ARCH = $(shell $(CC) $(CFLAGS) -dumpmachine | awk -F '-' '{print $$1}')
 endif
 PLATFORM = libretro
 NO_CONFIG_MAK = yes
