@@ -1,5 +1,7 @@
 # Makefile for PicoDrive (libretro)
 
+EMULATORJS_THREADS ?= 0
+
 SPACE :=
 SPACE := $(SPACE) $(SPACE)
 BACKSLASH :=
@@ -446,6 +448,11 @@ else ifeq ($(platform), emscripten)
 	NO_ALIGN_FUNCTIONS = 1
 	STATIC_LINKING_LINK = 1
 	STATIC_LINKING = 1
+	ifeq ($(EMULATORJS_THREADS), 1)
+		LDFLAGS += -pthread
+		CFLAGS += -pthread
+		CXXFLAGS += -pthread
+	endif
 
 # RS90
 else ifeq ($(platform), rs90)
